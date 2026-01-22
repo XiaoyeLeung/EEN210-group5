@@ -6,8 +6,8 @@
 
 // Public internet, allow port in firewall
 // Replace with your network credentials
-const char *ssid = "your WiFi SSID";
-const char *password = "your Passoword";
+const char *ssid = "Edith (2)"; //
+const char *password = "tionollor";
 
 // Replace with your WebSocket server address
 const char *webSocketServer = "your WiFi IP Address";
