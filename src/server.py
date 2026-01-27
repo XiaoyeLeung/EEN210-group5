@@ -28,7 +28,7 @@ class DataProcessor: #saves the data into csv
         self.data_buffer = [] #list where you save data
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.file_path = f"./fall_data_{timestamp}.csv"
+        self.file_path = f"./activity_person_nr{timestamp}.csv" #CHANGE HERE TO THE TYPE OF MOVEMENT!
         print(self.file_path)
 
     def add_data(self, data):
