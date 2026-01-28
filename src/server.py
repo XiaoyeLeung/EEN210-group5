@@ -28,7 +28,7 @@ class DataProcessor: #saves the data into csv
         self.data_buffer = [] #list where you save data
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.file_path = f"./activity_person_nr{timestamp}.csv" #CHANGE HERE TO THE TYPE OF MOVEMENT!
+        self.file_path = f"./Standing_Edith_1{timestamp}.csv" #CHANGE HERE TO THE TYPE OF MOVEMENT!
         print(self.file_path)
 
     def add_data(self, data):
@@ -101,7 +101,6 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            print("hi")
 
             # Broadcast the incoming data to all connected clients
             json_data = json.loads(data)
