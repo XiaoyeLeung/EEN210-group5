@@ -19,7 +19,7 @@
     </ul>
     <script>
         // Change the IP address based on your current wifi ip address
-        var ipAddress = "your_IP_Address";
+        var ipAddress = "172.20.10.13";
         // Use the variable in the WebSocket URL
         var ws = new WebSocket("ws://" + ipAddress + ":8000/ws"); // Create a new WebSocket
         ws.onopen = function (event) {
