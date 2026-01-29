@@ -14,8 +14,8 @@ WebSocketsClient client;
 bool wifiConnected = false;
 
 // ======= Välj frekvenser här =======
-const uint8_t MPU_RATE_DIV = 9;                 // 50 Hz (1000/(1+19)) SENSOR MPU 
-const unsigned long SAMPLE_PERIOD_US = 10000;    // 50 Hz (20ms) MICROCONTROLLER
+const uint8_t MPU_RATE_DIV = 19;                 // 50 Hz (1000/(1+19)) SENSOR MPU 
+const unsigned long SAMPLE_PERIOD_US = 20000;    // 50 Hz (20ms) MICROCONTROLLER
 const unsigned long SEND_PERIOD_MS   = 100;      // 10 Hz (100ms) WIFI
 
 // Batch size = hur många samples som hinner samplas på SEND_PERIOD_MS
@@ -103,7 +103,7 @@ void loop() {
                  ",\"gy\":" + String(batch[i].gy/131.0f) +
                  ",\"gz\":" + String(batch[i].gz/131.0f) +
                  "}";
-      if (i < batchIndex - 1) payload += ",";
+      if (i < batchIndex - 1) payload += ","; 
     }
     payload += "]}";
 
