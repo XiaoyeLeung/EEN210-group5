@@ -41,8 +41,8 @@ void setup() {
 
   mpu.initialize();
   // mpu.setDLPFMode(MPU6050_DLPF_BW_42); // kan aktiveras senare
-  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_4); // ±4g
-  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_500); // ±2000 °/s
+  //mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_4); // ±4g
+  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_500); // ±500 °/s
   mpu.setRate(MPU_RATE_DIV);
 
   WiFi.begin(ssid, password);
@@ -98,9 +98,9 @@ void loop() {
     for (int i = 0; i < batchIndex; i++) {
       payload += "{"
                  "\"t_us\":" + String(batch[i].t_us) +
-                 ",\"ax\":" + String(batch[i].ax/8192.0f) +
-                 ",\"ay\":" + String(batch[i].ay/8192.0f) +
-                 ",\"az\":" + String(batch[i].az/8192.0f) +
+                 ",\"ax\":" + String(batch[i].ax/16384.0f) +
+                 ",\"ay\":" + String(batch[i].ay/16384.0f) +
+                 ",\"az\":" + String(batch[i].az/16384.0f) +
                  ",\"gx\":" + String(batch[i].gx/65.5f) +
                  ",\"gy\":" + String(batch[i].gy/65.5f) +
                  ",\"gz\":" + String(batch[i].gz/65.5f) +
