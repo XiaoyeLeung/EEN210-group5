@@ -21,7 +21,7 @@ app.add_middleware(
 
 with open("./src/index.html", "r") as f:
     html = f.read()
-
+ 
 
 class DataProcessor: #saves the data into csv 
     def __init__(self):
