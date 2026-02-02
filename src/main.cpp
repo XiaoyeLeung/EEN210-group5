@@ -36,11 +36,13 @@ unsigned long lastSampleUs = 0;
 unsigned long lastSendMs = 0;
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(9600); 
   Wire.begin();
 
   mpu.initialize();
   // mpu.setDLPFMode(MPU6050_DLPF_BW_42); // kan aktiveras senare
+  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_4); // ±4g
+  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_2000); // ±2000 °/s
   mpu.setRate(MPU_RATE_DIV);
 
   WiFi.begin(ssid, password);
@@ -96,12 +98,12 @@ void loop() {
     for (int i = 0; i < batchIndex; i++) {
       payload += "{"
                  "\"t_us\":" + String(batch[i].t_us) +
-                 ",\"ax\":" + String(batch[i].ax/16384.0f) +
-                 ",\"ay\":" + String(batch[i].ay/16384.0f) +
-                 ",\"az\":" + String(batch[i].az/16384.0f) +
-                 ",\"gx\":" + String(batch[i].gx/131.0f) +
-                 ",\"gy\":" + String(batch[i].gy/131.0f) +
-                 ",\"gz\":" + String(batch[i].gz/131.0f) +
+                 ",\"ax\":" + String(batch[i].ax/8192.0f) +
+                 ",\"ay\":" + String(batch[i].ay/8192.0f) +
+                 ",\"az\":" + String(batch[i].az/8192.0f) +
+                 ",\"gx\":" + String(batch[i].gx/16.4f) +
+                 ",\"gy\":" + String(batch[i].gy/16.4f) +
+                 ",\"gz\":" + String(batch[i].gz/16.4f) +
                  "}";
       if (i < batchIndex - 1) payload += ","; 
     }
