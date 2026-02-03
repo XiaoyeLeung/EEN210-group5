@@ -25,7 +25,7 @@ df_long = df_raw.explode("samples").reset_index(drop=True)
 # 4) Make dictarna to kolumner: t_us, ax, ay, az, gx, gy, gz
 samples_df = pd.json_normalize(df_long["samples"])
 
-# 5) Add together (behåll timestamp och label om du vill)
+# 5) Add together 
 df = pd.concat([samples_df, df_long[["timestamp", "label"]]], axis=1)
 
 # Time in seconds
