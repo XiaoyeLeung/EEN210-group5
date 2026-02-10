@@ -2,7 +2,45 @@ import numpy as np
 import pandas as pd
 from scipy.stats import skew, kurtosis, entropy
 from mpl_toolkits.mplot3d import Axes3D
+import copy
 
+# smoothing functions
+def apply_smoothing_to_dataset(data_dict, window_size=50, method='gaussian'):
+    """
+    Applies smoothing to the entire dataset for experimental feature extraction.
+    
+    Args:
+        data_dict: Dictionary containing raw DataFrames.
+        window_size: Size of the smoothing window (e.g., 50 for 1s).
+        method: 'gaussian' (recommended) or 'boxcar' (rolling mean).
+        
+    Returns:
+        A new dictionary with smoothed data in 'acc_mag' and 'gyro_mag'.
+    """
+    # 1. Deep copy to avoid modifying the original raw data
+    # This is crucial! You want to keep raw data safe for comparison.
+    smoothed_dict = copy.deepcopy(data_dict)
+    
+    print(f"Applying {method} smoothing to {len(smoothed_dict)} files...")
+    
+    for fname, df in smoothed_dict.items():
+        # Apply smoothing to Accelerometer
+        if method == 'gaussian':
+            # Gaussian is better at preserving peak location than simple rolling mean
+            df['acc_mag'] = df['acc_mag'].rolling(window=window_size, win_type='gaussian', center=True).mean(std=window_size/5)
+            df['gyro_mag'] = df['gyro_mag'].rolling(window=window_size, win_type='gaussian', center=True).mean(std=window_size/5)
+        else:
+            # Simple Rolling Mean
+            df['acc_mag'] = df['acc_mag'].rolling(window=window_size, center=True).mean()
+            df['gyro_mag'] = df['gyro_mag'].rolling(window=window_size, center=True).mean()
+            
+        # Handle NaN at edges (smoothing creates NaNs at start/end)
+        # Backfill and Forward fill to keep data length unchanged
+        df.fillna(method='bfill', inplace=True)
+        df.fillna(method='ffill', inplace=True)
+        
+    print("Smoothing complete.")
+    return smoothed_dict
 
 # sliding window slicing
 def sliding_windows(df, window_s=2.0, step_s=1.0, fs=50):
@@ -166,10 +204,6 @@ def build_feature_dataset(file_dict, window_s=2.0, step_s=1.0, fs=50):
             all_features.append(f_dict)
             
     return pd.DataFrame(all_features)
-
-
-
-
 
 
 

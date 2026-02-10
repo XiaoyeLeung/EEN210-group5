@@ -162,34 +162,35 @@ def plot_session(df, title="Session", show_gaps=True, max_seconds=None):
 
 
 # TSA smoothing
-def window_smooth(df, target_col="acc_mag", window_size=50):
+def window_smooth(df, target_col="acc_mag", window_size=10):
     """
-    smoothing: rolling vs gaussian
+    Smoothing: Simple Rolling Mean Only
     """
-    # rect. window
+
+    if target_col not in df.columns:
+        print(f"Error: Column '{target_col}' not found.")
+        return
+
+ 
     df["smooth_boxcar"] = df[target_col].rolling(window=window_size, center=True).mean()
 
-    # gaussian window
-    df["smooth_gaussian"] = df[target_col].rolling(
-        window=window_size, 
-        win_type='gaussian', 
-        center=True
-    ).mean(std=window_size/5)
 
     plt.figure(figsize=(12, 5))
-    plt.plot(df["t_s"], df[target_col], color='lightgray', alpha=0.5, label='Raw data') # raw
-    plt.plot(df["t_s"], df["smooth_boxcar"], color='blue', linestyle='--', label='Rolling Mean')
-    plt.plot(df["t_s"], df["smooth_gaussian"], color='red', label='Gaussian window')
-    plt.title(f"Smoothing comparison: Rolling mean vs. Gaussian (Window={window_size})")
+    
+    plt.plot(df["t_s"], df[target_col], color='lightgray', alpha=0.6, label='Raw Data') 
+    
+
+    plt.plot(df["t_s"], df["smooth_boxcar"], color='tab:blue', linewidth=2, label=f'Rolling Mean (Win={window_size})')
+    
+    plt.title(f"Time Series Smoothing: Simple Rolling Mean (Window={window_size})")
     plt.xlabel("Time (s)")
-    plt.ylabel("Magnitude")
+    plt.ylabel(target_col)
     plt.legend()
-    plt.grid(True, alpha=0.3)
+    plt.grid(True, alpha=0.3, linestyle='--')
+    
     plt.xlim(df["t_s"].min(), df["t_s"].max()) 
     
     plt.show()
-
-
 
 
 # feature visualization
