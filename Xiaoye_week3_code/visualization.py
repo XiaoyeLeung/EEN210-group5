@@ -6,40 +6,81 @@ import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D
 
 # for mac
+"""
 if platform.system() == 'Darwin':
     import matplotlib
     matplotlib.use('TkAgg')
+"""
 
 
 
-def plot_raw_lines(dfs_dict, feature="acc_mag", ylabel="Acceleration (g)"):
-
+def plot_raw_lines(dfs_dict, feature="acc_mag", ylabel="Amplitude"):
+    """
+    fig 1: Acc (Mag bold, XYZ transparent)
+    fig 2: Gyro (Mag bold, XYZ transparent)
+    """
     n = len(dfs_dict)
-    fig, axes = plt.subplots(nrows=n, ncols=1, figsize=(12, 4*n), sharex=False)
-    if n == 1: axes = [axes]
+    colors_xyz = {'x': '#d62728', 'y': '#2ca02c', 'z': '#1f77b4'} # Red, Green, Blue
+    
+    fig_acc, axes_acc = plt.subplots(nrows=n, ncols=1, figsize=(12, 4*n), sharex=True)
+    if n == 1: axes_acc = [axes_acc] # Handle single case
     
     for i, (label, df) in enumerate(dfs_dict.items()):
-        ax = axes[i]
+        ax = axes_acc[i]
         
-
-        ax.plot(df["t_s"], df[feature], color='tab:blue', lw=1.5, label=feature)
+        if {'ax', 'ay', 'az'}.issubset(df.columns):
+            ax.plot(df["t_s"], df["ax"], c=colors_xyz['x'], lw=1, alpha=0.6, label='X')
+            ax.plot(df["t_s"], df["ay"], c=colors_xyz['y'], lw=1, alpha=0.6, label='Y')
+            ax.plot(df["t_s"], df["az"], c=colors_xyz['z'], lw=1, alpha=0.6, label='Z')
         
-     
-        if "acc" in feature and "Fall" in label:
-            peak_idx = df[feature].idxmax()
-            peak_time = df.loc[peak_idx, "t_s"]
-            peak_val = df.loc[peak_idx, feature]
-            ax.annotate('Impact', xy=(peak_time, peak_val), xytext=(peak_time+1, peak_val),
-                        arrowprops=dict(facecolor='red', shrink=0.05))
-
-        ax.set_title(f"{label}: Time Domain Trend", fontweight='bold')
-        ax.set_ylabel(ylabel)
+       
+        if 'acc_mag' in df.columns:
+            
+            ax.plot(df["t_s"], df["acc_mag"], c='#333333', lw=1, alpha=1.0, label='Mag')
+            
+            # ?? mark impact
+            """
+            if "Fall" in label:
+                peak_idx = df["acc_mag"].idxmax()
+                peak_time = df.loc[peak_idx, "t_s"]
+                peak_val = df.loc[peak_idx, "acc_mag"]
+                ax.annotate('Impact', xy=(peak_time, peak_val), xytext=(peak_time+0.6, peak_val),
+                            arrowprops=dict(facecolor='red', shrink=0.05))
+            """
+            
+        ax.set_title(f"{label} - Acceleration", fontweight='bold')
+        ax.set_ylabel("Acc (g)")
         ax.grid(True, linestyle='--', alpha=0.3)
-        if i == 0: ax.legend(loc="upper right")
-    
-    axes[-1].set_xlabel("Time (s)")
+        if i == 0: ax.legend(loc="upper right", ncol=4) 
+
+    axes_acc[-1].set_xlabel("Time (s)")
     plt.tight_layout()
-    plt.show()
+    plt.show() 
+
+    # fig 2
+    fig_gyro, axes_gyro = plt.subplots(nrows=n, ncols=1, figsize=(12, 4*n), sharex=True)
+    if n == 1: axes_gyro = [axes_gyro]
+
+    for i, (label, df) in enumerate(dfs_dict.items()):
+        ax = axes_gyro[i]
+        
+        if {'gx', 'gy', 'gz'}.issubset(df.columns):
+            ax.plot(df["t_s"], df["gx"], c=colors_xyz['x'], lw=1, alpha=0.5, label='X')
+            ax.plot(df["t_s"], df["gy"], c=colors_xyz['y'], lw=1, alpha=0.5, label='Y')
+            ax.plot(df["t_s"], df["gz"], c=colors_xyz['z'], lw=1, alpha=0.5, label='Z')
+        
+        if 'gyro_mag' in df.columns:
+            ax.plot(df["t_s"], df["gyro_mag"], c='#333333', lw=1.2, alpha=1.0, label='Mag')
+
+        ax.set_title(f"{label} - Gyroscope", fontweight='bold')
+        ax.set_ylabel("Gyro (rad/s)")
+        ax.grid(True, linestyle='--', alpha=0.3)
+        if i == 0: ax.legend(loc="upper right", ncol=4)
+
+    axes_gyro[-1].set_xlabel("Time (s)")
+    plt.tight_layout()
+    plt.show() 
+
 
 def plot_raw_hists(dfs_dict, feature="acc_mag"):
    
@@ -76,7 +117,7 @@ def plot_raw_scatter(dfs_dict, x_col="acc_mag", y_col="gyro_mag"):
         
 
         sc = ax.scatter(df[x_col], df[y_col], 
-                        c=df["t_s"], cmap="viridis", alpha=0.5, s=20)
+                        c=df["t_s"], cmap="viridis", alpha=0.4, s=10)
         
         ax.set_title(f"{label}: {x_col} vs {y_col}", fontweight='bold')
         ax.set_xlabel(x_col)
@@ -119,45 +160,42 @@ def plot_session(df, title="Session", show_gaps=True, max_seconds=None):
     plt.tight_layout()
     plt.show()
 
-def plot_rolling(df, col_raw, col_mean, col_std, title="Rolling Stats"):
 
-    plt.figure(figsize=(10, 4))
-    plt.plot(df["t_s"], df[col_raw], alpha=0.3, label="Raw")
-    plt.plot(df["t_s"], df[col_mean], linewidth=2, label="Rolling Mean")
-    plt.plot(df["t_s"], df[col_std], linewidth=2, label="Rolling Std")
+# TSA smoothing
+def window_smooth(df, target_col="acc_mag", window_size=50):
+    """
+    smoothing: rolling vs gaussian
+    """
+    # rect. window
+    df["smooth_boxcar"] = df[target_col].rolling(window=window_size, center=True).mean()
+
+    # gaussian window
+    df["smooth_gaussian"] = df[target_col].rolling(
+        window=window_size, 
+        win_type='gaussian', 
+        center=True
+    ).mean(std=window_size/5)
+
+    plt.figure(figsize=(12, 5))
+    plt.plot(df["t_s"], df[target_col], color='lightgray', alpha=0.5, label='Raw data') # raw
+    plt.plot(df["t_s"], df["smooth_boxcar"], color='blue', linestyle='--', label='Rolling Mean')
+    plt.plot(df["t_s"], df["smooth_gaussian"], color='red', label='Gaussian window')
+    plt.title(f"Smoothing comparison: Rolling mean vs. Gaussian (Window={window_size})")
     plt.xlabel("Time (s)")
-    plt.title(title)
+    plt.ylabel("Magnitude")
     plt.legend()
-    plt.tight_layout()
+    plt.grid(True, alpha=0.3)
+    plt.xlim(df["t_s"].min(), df["t_s"].max()) 
+    
     plt.show()
+
+
 
 
 # feature visualization
 
-
-
 sns.set_style("whitegrid")
 COLORS = sns.color_palette("husl", 5) 
-
-def plot_hist_compare(df, feature, label_col="label", bins=30, density=True):
- 
-    plt.figure(figsize=(8, 5))
-    
-   
-    labels = df[label_col].unique()
-    
-    for i, lab in enumerate(sorted(labels)):
-        subset = df[df[label_col] == lab][feature].dropna()
-        plt.hist(subset, bins=bins, alpha=0.5, density=density, 
-                 label=f"{label_col}={lab}", color=COLORS[i % len(COLORS)])
-
-    ylabel = "Density (Normalized)" if density else "Count"
-    plt.xlabel(feature)
-    plt.ylabel(ylabel)
-    plt.title(f"Distribution of {feature} by {label_col}")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
 
 def plot_boxplot_stat(df, feature, label_col="label"):
     
@@ -168,21 +206,7 @@ def plot_boxplot_stat(df, feature, label_col="label"):
     plt.grid(True, linestyle="--", alpha=0.3)
     plt.show()
 
-def scatter_features(df, x, y, group_col="label"):
-    
-    plt.figure(figsize=(8, 6))
-    
-    
-    sns.scatterplot(data=df, x=x, y=y, hue=group_col, style=group_col, palette="deep", alpha=0.7)
-    
-    plt.xlabel(x)
-    plt.ylabel(y)
-    plt.title(f"Feature Space: {x} vs {y} (grouped by {group_col})")
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
-    plt.show()
-
-
+# 3d
 def plot_3d_feature_space(df, x, y, z, label_col="activity"):
     """
     Plot 3D scatter of features to visualize class separation.
@@ -219,11 +243,11 @@ def plot_3d_feature_space(df, x, y, z, label_col="activity"):
         
         ax.scatter(
             subset[x], subset[y], subset[z],
-            c=color_map.get(label, 'gray'), # Default to gray if unknown
+            c=color_map.get(label, 'gray'), 
             label=label,
-            alpha=0.8 if is_fall else 0.3,  # Transparency
-            s=40 if is_fall else 20,        # Size
-            edgecolors='w' if is_fall else None,
+            alpha=0.8 if is_fall else 0.3,  
+            s=40 if is_fall else 20,       
+            edgecolors='k' if is_fall else None,
             linewidth=0.5
         )
 

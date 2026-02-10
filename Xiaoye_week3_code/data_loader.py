@@ -154,8 +154,7 @@ def batch_process(raw_dir, out_dir):
                     
                     qc_list.append(qc)
                     print(f"[Processed] {qc['file']}: {qc.get('expanded_points', 'N/A')} points ({qc.get('fs_est_hz', 'N/A')} Hz)")
-            # ----------------
-            
+                   
         except Exception as e:
             print(f"[Error] Processing {os.path.basename(path)}: {e}")
 

@@ -47,28 +47,40 @@ def sliding_windows(df, window_s=2.0, step_s=1.0, fs=50):
             
     return windows
 
-# --- 2. Mathematical Feature Calculation ---
+# Features
 
-def compute_fft_energy(signal, fs=50):
+def compute_spectral_features(signal, fs=50):
     """
-    Compute the spectral energy of the signal using FFT.
-    Ref: [cite: 65] Frequency-domain features.
+    Computes frequency domain features: Spectral Energy and Spectral Entropy.
     """
-    if len(signal) == 0: return 0
-    # Apply Hamming window to reduce spectral leakage
+    if len(signal) < 2:
+        return 0, 0
+        
+    # 1. Apply Hamming window to reduce spectral leakage
     windowed = signal * np.hamming(len(signal))
-    # Compute FFT
+    
+    # 2. Compute FFT (Real FFT since signal is real-valued)
     fft_vals = np.fft.rfft(windowed)
-    # Power Spectral Density (PSD)
+    
+    # 3. Compute Power Spectral Density (PSD)
+    # PSD represents the power distribution across frequencies
     psd = np.abs(fft_vals) ** 2
-    # Total Energy
-    energy = np.sum(psd)
-    return energy
+    
+    # Spectral Energy
+    spectral_energy = np.sum(psd)
+    
+    # Spectral Entropy 
+    # Normalize PSD to treat it like a probability distribution
+    psd_norm = psd / np.sum(psd)
+    # Compute Shannon Entropy (scipy.stats.entropy uses ln by default, base=2 is common for bits)
+    spectral_ent = entropy(psd_norm, base=2)
+    
+    return spectral_energy, spectral_ent
+
 
 def extract_features_from_window(w, fs=50):
     """
     Calculate statistical and frequency features for a single window.
-    Ref: [cite: 64] Mean, variance, skewness.
     """
     # Extract numpy arrays for efficiency
     acc = w["acc_mag"].values
@@ -77,16 +89,18 @@ def extract_features_from_window(w, fs=50):
     feats = {}
 
     
-    # 1. Intensity / Amplitude
+    # Intensity / Amplitude
     feats["acc_max"] = np.max(acc)
     feats["acc_mean"] = np.mean(acc)
+    feats["acc_var"] = np.var(acc)
     feats["acc_std"] = np.std(acc)
     
     feats["gyro_max"] = np.max(gyro)
     feats["gyro_mean"] = np.mean(gyro)
+    feats["gyro_var"] = np.var(gyro)
     feats["gyro_std"] = np.std(gyro)
 
-    # 2. Shape / Distribution (Critical for Falls)
+    # Shape / Distribution (Critical for Falls)
     # Skewness: Measures asymmetry. Falls often have high positive skew (one-sided spike).
     feats["acc_skew"] = skew(acc)
     # Kurtosis: Measures "tailedness" or impulsiveness. Impacts have very high kurtosis.
@@ -94,19 +108,25 @@ def extract_features_from_window(w, fs=50):
     
 
     # Frequency Domain Features 
-    # 3. Energy
-    feats["acc_energy"] = np.mean(acc**2) # Time-domain energy
-    feats["gyro_energy"] = np.mean(gyro**2)
+    acc_spec_energy, acc_spec_entropy = compute_spectral_features(acc, fs)
+    feats["acc_spec_energy"] = acc_spec_energy
+    feats["acc_spec_entropy"] = acc_spec_entropy
+    
+    # Calculate for Gyroscope (Optional but recommended)
+    gyro_spec_energy, gyro_spec_entropy = compute_spectral_features(gyro, fs)
+    feats["gyro_spec_energy"] = gyro_spec_energy
+    feats["gyro_spec_entropy"] = gyro_spec_entropy
+
+    return feats
 
 
     return feats
 
 
-
 def build_feature_dataset(file_dict, window_s=2.0, step_s=1.0, fs=50):
     """
     Iterate over all files, slice windows, and extract features.
-    
+
     Args:
         file_dict: Dictionary {filename: DataFrame}
     """
@@ -147,17 +167,25 @@ def build_feature_dataset(file_dict, window_s=2.0, step_s=1.0, fs=50):
             
     return pd.DataFrame(all_features)
 
-# statistical analysis
 
+
+
+
+
+
+
+
+
+
+
+# statistical analysis
 from scipy import stats
 
 def get_statistical_report(df, feature_list, group_col="binary_class", target_label="Fall"):
     """
     Perform independent t-tests and compute summary statistics (Mean +/- Std)
     to compare two groups (e.g., Fall vs. Non-Fall).
-    
-    Ref: Week 3 Instruction - Statistical Analysis 
-    
+   
     Args:
         df: DataFrame containing features and labels.
         feature_list: List of feature names to analyze.
@@ -251,7 +279,7 @@ def detect_events(df, signal_col="acc_mag", fs=50, window_s=0.5, threshold=0.2, 
     if in_event:
         events.append((start_t, times[-1]))
         
-    # Merge close events)
+    # Merge close events
     if not events:
         return []
         
