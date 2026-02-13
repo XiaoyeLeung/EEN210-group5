@@ -19,7 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-with open("./src/index.html", "r") as f:
+with open(f"./src/index.html", "r") as f:
     html = f.read()
  
 
@@ -28,7 +28,7 @@ class DataProcessor: #saves the data into csv
         self.data_buffer = [] #list where you save data
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.file_path = f"./Data/Fallingbackwards_p2_3_35sek_{timestamp}.csv" #CHANGE HERE TO THE TYPE OF MOVEMENT!
+        self.file_path = f"./Data/Falling_side_left_short_P3_2_{timestamp}.csv" #CHANGE HERE TO THE TYPE OF MOVEMENT!
         print(self.file_path)
 
     def add_data(self, data):
@@ -114,7 +114,7 @@ async def websocket_endpoint(websocket: WebSocket):
             data_processor.add_data(json_data)
             # this line save the recent 100 samples to the CSV file. you can change 100 if you want.
             if len(data_processor.data_buffer) >= 100:
-                print("save to file")
+                #print("save to file")
                 data_processor.save_to_csv()
 
             """  

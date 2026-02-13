@@ -9,7 +9,7 @@ import numpy as np
 # ‘samples’ column. The data was therefore expanded so that each 
 # individual sensor sample became one row before further analysis.
 # 1) Read the CSV file
-file_path = "Data\Sittingtostanding_p1_2_35sek_20260204_153654.csv" #CHANGE FILEPATH HERE
+file_path = "Data\Falling_side_left_short_P3_1_20260213_114817.csv" #CHANGE FILEPATH HERE
 
 file_name = os.path.basename(file_path)
 activity = file_name.split("_")[0] 
