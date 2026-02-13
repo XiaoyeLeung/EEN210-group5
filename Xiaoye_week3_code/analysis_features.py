@@ -5,7 +5,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import copy
 
 # smoothing functions
-def apply_smoothing_to_dataset(data_dict, window_size=50, method='gaussian'):
+def apply_smoothing_to_dataset(data_dict, window_size=10, method='gaussian'):
     """
     Applies smoothing to the entire dataset for experimental feature extraction.
     
