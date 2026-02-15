@@ -4,9 +4,84 @@ import json
 import ast
 import numpy as np
 import pandas as pd
-
+from scipy import interpolate
 
 SENSOR_KEYS = ["t_us", "ax", "ay", "az", "gx", "gy", "gz"]
+
+def resample_segment(df_segment, seg_id,target_fs=50):
+    """
+    resample_segment: Resample a segment of data to a fixed sampling frequency (e.g., 50Hz) using linear interpolation.
+    """
+    if len(df_segment) < 2:
+        return None
+    t = df_segment['t_s'].values
+
+    # new time vector based on target_fs 
+    t_start, t_end = t[0], t[-1]
+    epsilon = 1e-9
+    t_new = np.arange(t_start, t_end + epsilon, 1/target_fs)
+    
+    if len(t_new) < 2:
+        return None
+        
+    # new dataframe to hold resampled data
+    df_new = pd.DataFrame({'t_s': t_new})
+    df_new['seg_id'] = seg_id
+    
+    # the columns we want to interpolate (ax, ay, az, gx, gy, gz)
+    cols_to_interp = ['ax', 'ay', 'az', 'gx', 'gy', 'gz']
+    
+    for col in cols_to_interp:
+        if col in df_segment.columns:
+            # Linear Interpolation)
+            df_new[col] = np.interp(t_new, t, df_segment[col].values)
+            
+    existing_cols = set(df_segment.columns)
+    handled_cols = set(cols_to_interp + ['t_s', 't_us', 'dt_us', 'is_gap'])
+    metadata_cols = existing_cols - handled_cols
+    
+    # Copy over any metadata columns that are not in handled_cols
+    for col in metadata_cols:
+        df_new[col] = df_segment[col].iloc[0]  # assuming metadata is constant within a segment
+        
+    return df_new
+
+
+def resample_to_fixed_fs(df, target_fs=50, gap_col="is_gap"):
+    """
+    deal with variable sampling rate and gaps by resampling each continuous segment separately.
+    """
+    if df.empty: return df
+
+    if gap_col not in df.columns:
+        df['seg_id'] = 0
+    else:
+        df['seg_id'] = df[gap_col].astype(int).cumsum()
+
+    
+    resampled_segments = []
+    
+    # resample each segment separately
+    for seg_id, group in df.groupby('seg_id'):
+        
+        
+        if len(group) >= 2:
+            resampled_seg = resample_segment(group, seg_id, target_fs)
+            if resampled_seg is not None:
+                resampled_segments.append(resampled_seg)
+                
+    
+    if not resampled_segments:
+        return pd.DataFrame()
+        
+    final_df = pd.concat(resampled_segments).reset_index(drop=True)
+    
+    return final_df
+
+
+
+
+
 
 def parse_samples(s):
     """
@@ -30,7 +105,6 @@ def process_file(path, out_long_dir):
     
     if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
         print(f"[Skip] {base}.parquet already exists.")
-        
         return {"file": os.path.basename(path), "status": "skipped"}
     
     # 1. Read raw CSV
@@ -52,9 +126,7 @@ def process_file(path, out_long_dir):
     # 3. Explode the list
     # If a row contains 5 samples, this turns it into 5 rows, duplicating the static columns (label, timestamp)
     df_exploded = df.explode("samples_parsed", ignore_index=True)
-    
-    # Remove rows where parsing failed or resulted in None
-    df_exploded = df_exploded.dropna(subset=["samples_parsed"])
+    df_exploded = df_exploded.dropna(subset=["samples_parsed"]) # Remove rows where parsing failed or resulted in None
 
     if df_exploded.empty:
         print(f"[Skip] {os.path.basename(path)}: No valid samples found after parsing.")
@@ -68,7 +140,7 @@ def process_file(path, out_long_dir):
     # Combine the metadata (label) with the unfolded sensor data
     # reset_index is crucial to align indices before concatenation
     cols_to_keep = [c for c in df_exploded.columns if c not in ["samples", "samples_parsed", "timestamp"]]
-    final_df = pd.concat([
+    raw_df = pd.concat([
         df_exploded[cols_to_keep].reset_index(drop=True), 
         samples_df
     ], axis=1)
@@ -76,35 +148,40 @@ def process_file(path, out_long_dir):
     # 6. Type conversion
     # Ensure all sensor columns are numeric
     for c in SENSOR_KEYS:
-        if c in final_df.columns:
-            final_df[c] = pd.to_numeric(final_df[c], errors="coerce")
+        if c in raw_df.columns:
+            raw_df[c] = pd.to_numeric(raw_df[c], errors="coerce")
     
     # Remove rows with missing timestamps and sort by time
-    if "t_us" in final_df.columns:
-        final_df = final_df.dropna(subset=["t_us"]).sort_values("t_us").reset_index(drop=True)
+    if "t_us" in raw_df.columns:
+        raw_df = raw_df.dropna(subset=["t_us"]).sort_values("t_us").reset_index(drop=True)
     else:
         print(f"[Skip] {os.path.basename(path)}: 't_us' column missing in samples.")
         return None
 
     # 7. Time series processing (Gaps & Sampling Rate)
-    if len(final_df) > 1:
-        final_df["dt_us"] = final_df["t_us"].diff()
-        dt_med = final_df["dt_us"].median()
+    if len(raw_df) > 1:
+        raw_df["dt_us"] = raw_df["t_us"].diff()
+        dt_med = raw_df["dt_us"].median()
         
         # Mark gaps: if the time difference is > 3x the median delta, consider it a data gap (packet loss)
-        final_df["is_gap"] = final_df["dt_us"] > (3 * dt_med)
+        raw_df["is_gap"] = raw_df["dt_us"] > (3 * dt_med)
         
         # Calculate relative time in seconds (t_s) starting from 0
-        t0 = final_df["t_us"].iloc[0]
-        final_df["t_s"] = (final_df["t_us"] - t0) / 1e6
+        t0 = raw_df["t_us"].iloc[0]
+        raw_df["t_s"] = (raw_df["t_us"] - t0) / 1e6
         
         # Estimate sampling frequency
         fs = 1e6 / dt_med if dt_med > 0 else 0
     else:
-        final_df["t_s"] = 0.0
-        final_df["is_gap"] = False
-        dt_med = 0
-        fs = 0
+        return None
+
+    # 7. Resample to fixed frequency and handle gaps
+    final_df = resample_to_fixed_fs(raw_df, target_fs=50)
+    
+    if final_df.empty:
+        print(f"[Skip] {os.path.basename(path)}: Data empty after resampling.")
+        return None
+
 
     # 8. Compute Magnitude
     if all(x in final_df.columns for x in ["ax", "ay", "az"]):
@@ -112,6 +189,8 @@ def process_file(path, out_long_dir):
     
     if all(x in final_df.columns for x in ["gx", "gy", "gz"]):
         final_df["gyro_mag"] = np.sqrt(final_df["gx"]**2 + final_df["gy"]**2 + final_df["gz"]**2)
+
+    
 
     # 9. Save as Parquet
     base = os.path.splitext(os.path.basename(path))[0]

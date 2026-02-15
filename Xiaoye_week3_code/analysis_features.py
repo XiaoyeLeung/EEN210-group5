@@ -3,77 +3,81 @@ import pandas as pd
 from scipy.stats import skew, kurtosis, entropy
 from mpl_toolkits.mplot3d import Axes3D
 import copy
+from scipy import stats
+from scipy.signal import butter, filtfilt
 
-# smoothing functions
-def apply_smoothing_to_dataset(data_dict, window_size=10, method='gaussian'):
+
+# smoothing data - butterworth low-pass filter
+def apply_lowpass_filter(data_dict, cutoff=15, fs=50, order=4):
     """
-    Applies smoothing to the entire dataset for experimental feature extraction.
+    zero-phase Butterworth low-pass filter applied to each sensor axis, grouped by 'seg_id' to prevent cross-gap smoothing.
     
     Args:
-        data_dict: Dictionary containing raw DataFrames.
-        window_size: Size of the smoothing window (e.g., 50 for 1s).
-        method: 'gaussian' (recommended) or 'boxcar' (rolling mean).
-        
-    Returns:
-        A new dictionary with smoothed data in 'acc_mag' and 'gyro_mag'.
+       cutoff: Desired cutoff frequency of the filter (Hz). For human motion, 15Hz is a common choice.
     """
-    # 1. Deep copy to avoid modifying the original raw data
-    # This is crucial! You want to keep raw data safe for comparison.
     smoothed_dict = copy.deepcopy(data_dict)
     
-    print(f"Applying {method} smoothing to {len(smoothed_dict)} files...")
+    
+    nyquist = 0.5 * fs
+    normal_cutoff = cutoff / nyquist
+    # filter coefficients
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    padlen = 3 * (order + 1)
+
+    sensor_cols = ['ax', 'ay', 'az', 'gx', 'gy', 'gz']
+    
+    print(f"Applying Butterworth Low-Pass (Cutoff={cutoff}Hz) respecting seg_id...")
     
     for fname, df in smoothed_dict.items():
-        # Apply smoothing to Accelerometer
-        if method == 'gaussian':
-            # Gaussian is better at preserving peak location than simple rolling mean
-            df['acc_mag'] = df['acc_mag'].rolling(window=window_size, win_type='gaussian', center=True).mean(std=window_size/5)
-            df['gyro_mag'] = df['gyro_mag'].rolling(window=window_size, win_type='gaussian', center=True).mean(std=window_size/5)
-        else:
-            # Simple Rolling Mean
-            df['acc_mag'] = df['acc_mag'].rolling(window=window_size, center=True).mean()
-            df['gyro_mag'] = df['gyro_mag'].rolling(window=window_size, center=True).mean()
+        # safety check: if 'seg_id' doesn't exist, create a default one (treat whole file as one segment)
+        if 'seg_id' not in df.columns:
+            df['seg_id'] = 0
             
-        # Handle NaN at edges (smoothing creates NaNs at start/end)
-        # Backfill and Forward fill to keep data length unchanged
-        df.fillna(method='bfill', inplace=True)
-        df.fillna(method='ffill', inplace=True)
+        # smoothing each axis 
+        for col in sensor_cols:
+            if col in df.columns:
+                # only filter if we have enough data points in the segment to avoid edge artifacts
+                def filter_segment(series):
+                    if len(series) > padlen: 
+                        return filtfilt(b, a, series.values)
+                    else:
+                        return series.values 
+                
+                # [guarantee no cross-segment smoothing] Apply filter within each segment defined by 'seg_id'
+                df[col] = df.groupby('seg_id')[col].transform(filter_segment)
         
-    print("Smoothing complete.")
+        # recalculate magnitudes after smoothing
+        if set(['ax', 'ay', 'az']).issubset(df.columns):
+            df['acc_mag'] = np.sqrt(df['ax']**2 + df['ay']**2 + df['az']**2)
+            
+        if set(['gx', 'gy', 'gz']).issubset(df.columns):
+            df['gyro_mag'] = np.sqrt(df['gx']**2 + df['gy']**2 + df['gz']**2)
+            
+    print("Smoothing & Recalculation complete.")
     return smoothed_dict
+
 
 # sliding window slicing
 def sliding_windows(df, window_s=2.0, step_s=1.0, fs=50):
     """
-    Slice the dataframe into overlapping windows.
-    
-    Args:
-        df: Input dataframe (must contain 't_s' and sensor columns).
-        window_s: Window size in seconds (e.g., 2.0s).
-        step_s: Step size in seconds (e.g., 1.0s for 50% overlap).
-        fs: Sampling frequency.
-        
-    Returns:
-        List of DataFrame windows.
+    slicing window based on time (t_s) and segment id (seg_id) to ensure windows do not cross gaps.
     """
+    local_df = df.copy()
+    
+    if 'seg_id' not in local_df.columns:
+        local_df['seg_id'] = 0
+    
     win_n = int(window_s * fs)
     step_n = int(step_s * fs)
     windows = []
 
-    # Handle gaps: Do not slice across data gaps (is_gap == True)
-    # If 'is_gap' exists, use it to split segments; otherwise treat as one segment
-    if "is_gap" in df.columns and df["is_gap"].any():
-        # Create a group ID that increments every time a gap is encountered
-        df["seg_id"] = df["is_gap"].cumsum()
-        groups = df.groupby("seg_id")
-    else:
-        groups = [(0, df)]
+
+    groups = local_df.groupby("seg_id")
 
     for _, g in groups:
         g = g.reset_index(drop=True)
         n_samples = len(g)
         
-        # Skip segments shorter than one window
         if n_samples < win_n:
             continue
 
@@ -85,34 +89,20 @@ def sliding_windows(df, window_s=2.0, step_s=1.0, fs=50):
             
     return windows
 
-# Features
-
+# Feature Extraction
 def compute_spectral_features(signal, fs=50):
     """
     Computes frequency domain features: Spectral Energy and Spectral Entropy.
     """
     if len(signal) < 2:
         return 0, 0
-        
-    # 1. Apply Hamming window to reduce spectral leakage
+    
     windowed = signal * np.hamming(len(signal))
-    
-    # 2. Compute FFT (Real FFT since signal is real-valued)
     fft_vals = np.fft.rfft(windowed)
-    
-    # 3. Compute Power Spectral Density (PSD)
-    # PSD represents the power distribution across frequencies
     psd = np.abs(fft_vals) ** 2
-    
-    # Spectral Energy
     spectral_energy = np.sum(psd)
-    
-    # Spectral Entropy 
-    # Normalize PSD to treat it like a probability distribution
-    psd_norm = psd / np.sum(psd)
-    # Compute Shannon Entropy (scipy.stats.entropy uses ln by default, base=2 is common for bits)
+    psd_norm = psd / (np.sum(psd) + 1e-9) 
     spectral_ent = entropy(psd_norm, base=2)
-    
     return spectral_energy, spectral_ent
 
 
@@ -127,77 +117,77 @@ def extract_features_from_window(w, fs=50):
     feats = {}
 
     
-    # Intensity / Amplitude
+    # time domain -  Amplitude
     feats["acc_max"] = np.max(acc)
     feats["acc_mean"] = np.mean(acc)
-    feats["acc_var"] = np.var(acc)
     feats["acc_std"] = np.std(acc)
-    
     feats["gyro_max"] = np.max(gyro)
     feats["gyro_mean"] = np.mean(gyro)
-    feats["gyro_var"] = np.var(gyro)
     feats["gyro_std"] = np.std(gyro)
 
-    # Shape / Distribution (Critical for Falls)
-    # Skewness: Measures asymmetry. Falls often have high positive skew (one-sided spike).
+    # time domain -  Shape / Distribution (Critical for Falls)
     feats["acc_skew"] = skew(acc)
-    # Kurtosis: Measures "tailedness" or impulsiveness. Impacts have very high kurtosis.
-    feats["acc_kurtosis"] = kurtosis(acc) 
-    
+    feats["acc_kurtosis"] = kurtosis(acc)
 
-    # Frequency Domain Features 
-    acc_spec_energy, acc_spec_entropy = compute_spectral_features(acc, fs)
-    feats["acc_spec_energy"] = acc_spec_energy
-    feats["acc_spec_entropy"] = acc_spec_entropy
-    
-    # Calculate for Gyroscope (Optional but recommended)
-    gyro_spec_energy, gyro_spec_entropy = compute_spectral_features(gyro, fs)
-    feats["gyro_spec_energy"] = gyro_spec_energy
-    feats["gyro_spec_entropy"] = gyro_spec_entropy
+    # frequency domain features
+    feats["acc_spec_energy"], feats["acc_spec_entropy"] = compute_spectral_features(acc, fs)
+    feats["gyro_spec_energy"], feats["gyro_spec_entropy"] = compute_spectral_features(gyro, fs)
 
     return feats
 
-
-    return feats
 
 
 def build_feature_dataset(file_dict, window_s=2.0, step_s=1.0, fs=50):
     """
     Iterate over all files, slice windows, and extract features.
-
-    Args:
-        file_dict: Dictionary {filename: DataFrame}
     """
     all_features = []
+
+    FALL_RADIUS_S = 1.0
     
     for filename, df in file_dict.items():
-        # Determine label based on filename (Simple rule-based)
-        # 1 = Fall, 0 = Non-Fall (ADL)
         fname_lower = filename.lower()
+        
         if "fall" in fname_lower:
-            label = 1
+            is_fall_file = True
             activity_type = "Fall"
-        elif "walk" in fname_lower:
-            label = 0
-            activity_type = "Walking"
-        elif "sit" in fname_lower or "stand" in fname_lower:
-            label = 0
-            activity_type = "Sit-Stand"
+            
+            # peak
+            peak_idx = df['acc_mag'].idxmax()
+            peak_time = df.loc[peak_idx, 't_s']
+            
         else:
-            label = 0
-            activity_type = "Other"
+            is_fall_file = False
+            if "walk" in fname_lower: activity_type = "Walking"
+            else: activity_type = "Sit-Stand"
+            peak_time = -999 # Dummy value
 
-        # Sliding Window
+        # 2. Sliding window slicing
         windows = sliding_windows(df, window_s=window_s, step_s=step_s, fs=fs)
         
         for w in windows:
-            # Extract
             f_dict = extract_features_from_window(w, fs)
             
-            # Add Metadata
+            # the center of the window
+            w_center = (w['t_s'].iloc[0] + w['t_s'].iloc[-1]) / 2
+            
+            
+            label = 0 
+            
+            if is_fall_file:
+                if abs(w_center - peak_time) <= FALL_RADIUS_S:
+                    label = 1
+                else:
+                    label = 0
+            
+
+            else:
+                label = 0
+            
             f_dict["file"] = filename
             f_dict["label"] = label
             f_dict["activity"] = activity_type
+
             f_dict["t_start"] = w["t_s"].iloc[0]
             f_dict["t_end"] = w["t_s"].iloc[-1]
             
@@ -209,12 +199,7 @@ def build_feature_dataset(file_dict, window_s=2.0, step_s=1.0, fs=50):
 
 
 
-
-
-
 # statistical analysis
-from scipy import stats
-
 def get_statistical_report(df, feature_list, group_col="binary_class", target_label="Fall"):
     """
     Perform independent t-tests and compute summary statistics (Mean +/- Std)
@@ -279,59 +264,3 @@ def get_statistical_report(df, feature_list, group_col="binary_class", target_la
         
     return pd.DataFrame(results)
 
-def detect_events(df, signal_col="acc_mag", fs=50, window_s=0.5, threshold=0.2, merge_gap_s=1.0):
-    """
-    based on the rolling standard deviation of a signal (e.g., acc_mag), detect periods of "activity" (like falls or walking) vs "static" (like standing).
-    
-    Returns:
-        events: List of tuples [(start_time, end_time), ...]
-    """
-
-    rolling_std = df[signal_col].rolling(window=int(window_s*fs), center=True).std().fillna(0)
-    
-    # 1 = Active, 0 = Static
-    is_active = rolling_std > threshold
-    
-
-    events = []
-    in_event = False
-    start_t = 0
-    
-    times = df["t_s"].values
-    active_flags = is_active.values
-    
-    for i in range(len(active_flags)):
-        if active_flags[i] and not in_event:
-            in_event = True
-            start_t = times[i]
-        elif not active_flags[i] and in_event:
-            in_event = False # Event ended
-            end_t = times[i]
-            events.append((start_t, end_t))
-            
-    # when the signal ends while still in an event, close it
-    if in_event:
-        events.append((start_t, times[-1]))
-        
-    # Merge close events
-    if not events:
-        return []
-        
-    merged_events = []
-    curr_start, curr_end = events[0]
-    
-    for next_start, next_end in events[1:]:
-        if next_start - curr_end < merge_gap_s:
-            # when events are close, merge them by extending the current event's end time
-            curr_end = next_end
-        else:
-            # when events are far apart, save the current event and start a new one
-            merged_events.append((curr_start, curr_end))
-            curr_start, curr_end = next_start, next_end
-            
-    merged_events.append((curr_start, curr_end))
-    
-    # filter out very short events (less than 0.5s) which are likely noise
-    final_events = [e for e in merged_events if (e[1] - e[0]) > 0.5]
-    
-    return final_events

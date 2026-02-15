@@ -161,38 +161,6 @@ def plot_session(df, title="Session", show_gaps=True, max_seconds=None):
     plt.show()
 
 
-# TSA smoothing
-def window_smooth(df, target_col="acc_mag", window_size=10):
-    """
-    Smoothing: Simple Rolling Mean Only
-    """
-
-    if target_col not in df.columns:
-        print(f"Error: Column '{target_col}' not found.")
-        return
-
- 
-    df["smooth_boxcar"] = df[target_col].rolling(window=window_size, center=True).mean()
-
-
-    plt.figure(figsize=(12, 5))
-    
-    plt.plot(df["t_s"], df[target_col], color='lightgray', alpha=0.6, label='Raw Data') 
-    
-
-    plt.plot(df["t_s"], df["smooth_boxcar"], color='tab:blue', linewidth=2, label=f'Rolling Mean (Win={window_size})')
-    
-    plt.title(f"Time Series Smoothing: Simple Rolling Mean (Window={window_size})")
-    plt.xlabel("Time (s)")
-    plt.ylabel(target_col)
-    plt.legend()
-    plt.grid(True, alpha=0.3, linestyle='--')
-    
-    plt.xlim(df["t_s"].min(), df["t_s"].max()) 
-    
-    plt.show()
-
-
 # feature visualization
 
 sns.set_style("whitegrid")
@@ -227,7 +195,8 @@ def plot_3d_feature_space(df, x, y, z, label_col="activity"):
         'Non-Fall': '#1f77b4',   
         'Walking': '#1f77b4',    
         'Sit-Stand': '#2ca02c',  
-        'Standing': '#ff7f0e',  
+        'Standing': '#ff7f0e',
+        'Other': 'gray'  
     }
     
 
