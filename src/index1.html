@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fall Detection Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            text-align: center;
+            padding: 20px;
+            background-color: #f4f4f9;
+            transition: background-color 0.2s ease;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        
+        .dashboard {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            min-width: 200px;
+        }
+
+        .label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+            display: block;
+        }
+
+        .value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+
+        
+        .status-normal {
+            color: #27ae60;
+        }
+
+        .status-danger {
+            color: #c0392b;
+            animation: pulse 0.5s infinite;
+        }
+
+        /* 全屏红色警报动画 */
+        .fall-detected-bg {
+            background-color: #ffcccc !important;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            50% {
+                opacity: 0.8;
+                transform: scale(1.05);
+            }
+
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        /* 图表容器 */
+        #chart-container {
+            width: 90%;
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>🚑 Real-Time Fall Detection System</h1>
+
+    <div class="dashboard">
+        <div class="card">
+            <span class="label">System Status</span>
+            <div id="status-text" class="value status-normal">Monitoring...</div>
+        </div>
+
+        <div class="card">
+            <span class="label">Fall Probability</span>
+            <div id="prob-text" class="value">0.0%</div>
+        </div>
+    </div>
+
+    <div id="chart-container">
+        <canvas id="sensorChart"></canvas>
+    </div>
+
+    <script>
+
+        const ctx = document.getElementById('sensorChart').getContext('2d');
+        const MAX_DATA_POINTS = 100;
+
+
+        const initialLabels = Array(MAX_DATA_POINTS).fill('');
+        const initialData = Array(MAX_DATA_POINTS).fill(1.0);
+
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: initialLabels,
+                datasets: [{
+                    label: 'Resultant Acceleration (g)',
+                    data: initialData,
+                    borderColor: '#3498db',
+                    backgroundColor: 'rgba(52, 152, 219, 0.2)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                animation: false,
+
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                scales: {
+                    y: {
+                        min: 0,
+                        max: 5,
+                        title: { display: true, text: 'Acceleration (g)' }
+                    },
+                    x: {
+                        display: false
+                    }
+                }
+            }
+        });
+
+
+
+        const statusText = document.getElementById("status-text");
+        const probText = document.getElementById("prob-text");
+        const body = document.body;
+
+        // reconnect logic with exponential backoff
+        function connectWebSocket() {
+            const ws = new WebSocket("ws://localhost:8000/ws");
+
+            ws.onopen = () => {
+                console.log("Connected to Server");
+                statusText.innerText = "Monitoring...";
+                statusText.className = "value status-normal";
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    const probability = (data.prob * 100).toFixed(1);
+                    probText.innerText = probability + "%";
+
+
+                    if (data.label === 1) {
+                        statusText.innerText = " FALL DETECTED!";
+                        statusText.className = "value status-danger";
+                        body.classList.add("fall-detected-bg"); // 
+                        probText.style.color = "#c0392b";
+                    } else {
+                        statusText.innerText = "Status: Normal";
+                        statusText.className = "value status-normal";
+                        body.classList.remove("fall-detected-bg");
+                        probText.style.color = "#2c3e50";
+                    }
+
+
+                    if (data.acc_mag !== undefined) {
+                        const newDataPoint = data.acc_mag;
+
+
+                        chart.data.datasets[0].data.shift();
+
+                        chart.data.datasets[0].data.push(newDataPoint);
+
+                        chart.update('none');
+                    }
+
+                } catch (e) {
+                    console.error("Data Parse Error:", e);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log(" Connection Lost. Reconnecting in 3s...");
+                statusText.innerText = "Disconnected";
+                statusText.style.color = "gray";
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error("WebSocket Error:", error);
+            };
+        }
+
+
+        connectWebSocket();
+
+    </script>
+</body>
+
+</html>

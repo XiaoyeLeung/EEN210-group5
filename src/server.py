@@ -1,13 +1,17 @@
 import os
 import json
 from datetime import datetime
-
+import numpy as np
 import pandas as pd
 import uvicorn
+import joblib
+from scipy.signal import butter, filtfilt
+from scipy.stats import skew, kurtosis, entropy 
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi import WebSocketDisconnect
 from starlette.middleware.cors import CORSMiddleware
+import features as feats
 
 app = FastAPI()
 # Enable CORS for all origins
@@ -19,14 +23,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-with open(f"./src/index.html", "r") as f:
-    html = f.read()
+try:
+    with open(f"./src/index.html", "r") as f:
+        html = f.read()
+except FileNotFoundError:
+    html = "<h1>index.html not found</h1>"
  
+
 
 class DataProcessor: #saves the data into csv 
     def __init__(self):
         self.data_buffer = [] #list where you save data
-
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.file_path = f"./Data/Falling_side_left_short_P3_2_{timestamp}.csv" #CHANGE HERE TO THE TYPE OF MOVEMENT!
         print(self.file_path)
@@ -50,20 +57,43 @@ class DataProcessor: #saves the data into csv
 data_processor = DataProcessor()
 
 
+
+
 def load_model():
-    # you should modify this function to return your model
-    model = None
-    return model
+    try:
+        base_path = os.path.dirname(os.path.abspath(__file__)) 
+        model_path = os.path.join(base_path, "fall_detection_model.joblib")
+        model = joblib.load(model_path)
+        print("Model loaded successfully")
+        return model
+    except Exception as e:
+        print(f"Model loading error: {e}")
+        return None
+    
 
 
 def predict_label(model=None, data=None):
-    # you should modify this to return the label
-    if model is not None:
-        label = model(data)
-        return label
-    return 0
+    if model is None or not data:
+        return 0, 0.0  # Default label and probability when model or data is not available
+    try:
+        df_window = feats.preprocess_window(data)
+        features_dict = feats.extract_features_from_window(df_window)
+
+        X_live = pd.DataFrame([features_dict])
+
+        # model prediction
+        probs = model.predict_proba(X_live)[0]
+        fall_prob = probs[1]  # Assuming class 1 is "Fall"
+        
+        label = 1 if fall_prob >= 0.5 else 0
+        return label, float(fall_prob)
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        return 0, 0.0  # Default label and probability on error  
+    
 
 
+# Websoecket manager to handle multiple connections and broadcast messages
 class WebSocketManager:
     def __init__(self):
         self.active_connections = set()
@@ -78,7 +108,7 @@ class WebSocketManager:
         print("WebSocket disconnected")
 
     async def broadcast_message(self, message: str):
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_text(message)
             except WebSocketDisconnect:
@@ -98,6 +128,9 @@ async def get():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket_manager.connect(websocket)
+
+    prediction_buffer = []
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -106,33 +139,43 @@ async def websocket_endpoint(websocket: WebSocket):
             json_data = json.loads(data)
 
             # use raw_data for prediction
-            raw_data = list(json_data.values())
+            save_data = json_data.copy()
+            save_data["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            data_processor.add_data(save_data)
 
-            # Add time stamp to the last received data
-            json_data["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            data_processor.add_data(json_data)
-            # this line save the recent 100 samples to the CSV file. you can change 100 if you want.
             if len(data_processor.data_buffer) >= 100:
-                #print("save to file")
                 data_processor.save_to_csv()
 
-            """  
-            In this line we use the model to predict the labels.
-            Right now it only return 0.
-            You need to modify the predict_label function to return the true label
-            """
-            label = predict_label(model, raw_data)
-            json_data["label"] = label
+            prediction_buffer.append(json_data)            
 
-            # print the last data in the terminal
-            print(json_data)
+            if len(prediction_buffer) > 100:
+                prediction_buffer.pop(0)
+            
+            label = 0
+            prob = 0.0
+            
+            
+            if len(prediction_buffer) == 100:
+                label, prob = predict_label(model, prediction_buffer)
+            
+            json_data["label"] = label
+            json_data["probability"] = prob
+
+            ax = json_data.get('ax', 0)
+            ay = json_data.get('ay', 0)
+            az = json_data.get('az', 0)
+            json_data["acc_mag"] = np.sqrt(ax**2 + ay**2 + az**2)
+
+            if label == 1:
+                print(f"Fall detected with probability {prob:.2f} at {json_data['timestamp']}") 
 
             # broadcast the last data to webpage
             await websocket_manager.broadcast_message(json.dumps(json_data))
 
     except WebSocketDisconnect:
         websocket_manager.disconnect(websocket)
+    except Exception as e:
+        print(f"WebSocket error: {e}")
 
 
 if __name__ == "__main__":
