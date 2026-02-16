@@ -33,10 +33,21 @@ except FileNotFoundError:
 
 class DataProcessor: #saves the data into csv 
     def __init__(self):
-        self.data_buffer = [] #list where you save data
+        self.data_buffer = []
+        
+        current_script_path = os.path.abspath(__file__)
+        src_directory = os.path.dirname(current_script_path)
+        root_directory = os.path.dirname(src_directory)
+        
+        data_dir = os.path.join(root_directory, "Data")
+        
+
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+            
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.file_path = f"./Data/Falling_side_left_short_P3_2_{timestamp}.csv" #CHANGE HERE TO THE TYPE OF MOVEMENT!
-        print(self.file_path)
+        self.file_path = os.path.join(data_dir, f"Falling_side_left_short_P3_2_{timestamp}.csv")
+        print(f"{self.file_path}")
 
     def add_data(self, data):
         self.data_buffer.append(data)
