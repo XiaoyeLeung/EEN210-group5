@@ -26,7 +26,7 @@ def apply_lowpass_filter(data_dict, cutoff=15, fs=50, order=4):
 
     sensor_cols = ['ax', 'ay', 'az', 'gx', 'gy', 'gz']
     
-    print(f"Applying Butterworth Low-Pass (Cutoff={cutoff}Hz) respecting seg_id...")
+    # print(f"Applying Butterworth Low-Pass (Cutoff={cutoff}Hz) respecting seg_id...")
     
     for fname, df in smoothed_dict.items():
         # safety check: if 'seg_id' doesn't exist, create a default one (treat whole file as one segment)
@@ -53,7 +53,7 @@ def apply_lowpass_filter(data_dict, cutoff=15, fs=50, order=4):
         if set(['gx', 'gy', 'gz']).issubset(df.columns):
             df['gyro_mag'] = np.sqrt(df['gx']**2 + df['gy']**2 + df['gz']**2)
             
-    print("Smoothing & Recalculation complete.")
+    # print("Smoothing & Recalculation complete.")
     return smoothed_dict
 
 

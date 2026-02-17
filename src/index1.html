@@ -166,7 +166,7 @@
 
         // reconnect logic with exponential backoff
         function connectWebSocket() {
-            const ws = new WebSocket("ws://localhost:8000/ws");
+            const ws = new WebSocket(`ws://${location.host}/ws`);
 
             ws.onopen = () => {
                 console.log("Connected to Server");
@@ -175,14 +175,16 @@
             };
 
             ws.onmessage = (event) => {
+                console.log("WS raw:", event.data);
+
                 try {
                     const data = JSON.parse(event.data);
 
-                    const probability = (data.prob * 100).toFixed(1);
+                    const probability = ((data.probability ?? 0) * 100).toFixed(1);
                     probText.innerText = probability + "%";
 
 
-                    if (data.label === 1) {
+                    if (Number(data.label) === 1) {
                         statusText.innerText = " FALL DETECTED!";
                         statusText.className = "value status-danger";
                         body.classList.add("fall-detected-bg"); // 
