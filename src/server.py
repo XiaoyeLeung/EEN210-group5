@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1] 
+sys.path.insert(0, str(ROOT))
+
 import os
 import json
 from datetime import datetime
@@ -11,7 +17,9 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi import WebSocketDisconnect
 from starlette.middleware.cors import CORSMiddleware
-import features as feats
+from Xiaoye_week3_code import analysis_features as af
+from Xiaoye_week3_code import data_loader
+
 
 app = FastAPI()
 # Enable CORS for all origins
@@ -24,84 +32,124 @@ app.add_middleware(
 )
 
 try:
-    with open(f"./src/index.html", "r") as f:
+    with open(f"./src/index1.html", "r") as f:
         html = f.read()
 except FileNotFoundError:
     html = "<h1>index.html not found</h1>"
  
 
 
-class DataProcessor: #saves the data into csv 
+class DataProcessor:
+   
     def __init__(self):
         self.data_buffer = []
-        
-        current_script_path = os.path.abspath(__file__)
-        src_directory = os.path.dirname(current_script_path)
-        root_directory = os.path.dirname(src_directory)
-        
-        data_dir = os.path.join(root_directory, "Data")
-        
+        os.makedirs("./Data", exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.file_path = f"./Data/Falling_side_left_short_P3_2_{ts}.csv"
+        print(self.file_path)
 
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
-            
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.file_path = os.path.join(data_dir, f"Falling_side_left_short_P3_2_{timestamp}.csv")
-        print(f"{self.file_path}")
-
-    def add_data(self, data):
-        self.data_buffer.append(data)
+    def add_row(self, row: dict):
+        # row must have: samples, timestamp, label
+        self.data_buffer.append(row)
 
     def save_to_csv(self):
-        df = pd.DataFrame.from_dict(self.data_buffer)
+        df = pd.DataFrame(self.data_buffer, columns=["samples", "timestamp", "label"])
         self.data_buffer = []
-        # Append the new row to the existing DataFrame
         df.to_csv(
             self.file_path,
             index=False,
             mode="a",
             header=not os.path.exists(self.file_path),
         )
-        #print(f"DataFrame saved to {self.file_path}")
-
 
 data_processor = DataProcessor()
 
+def preprocess_window_like_training(window_samples, target_fs=50, cutoff=15, fs=50, order=4):
+    """
+    window_samples: list of dicts from ESP32, each has t_us, ax, ay, az, gx, gy, gz
+    returns: DataFrame that matches training pipeline (t_s, seg_id, ax..gz, acc_mag, gyro_mag) after resample + filter
+    """
+    df = pd.DataFrame(window_samples).copy()
+
+   
+    for c in ["t_us", "ax", "ay", "az", "gx", "gy", "gz"]:
+        if c not in df.columns:
+            df[c] = 0.0
+
+
+    df["t_us"] = pd.to_numeric(df["t_us"], errors="coerce")
+    df = df.dropna(subset=["t_us"]).sort_values("t_us").reset_index(drop=True)
+    if len(df) < 2:
+        return df
+
+
+    df["dt_us"] = df["t_us"].diff()
+    dt_med = df["dt_us"].median()
+    df["is_gap"] = df["dt_us"] > (3 * dt_med) if pd.notna(dt_med) and dt_med > 0 else False
+
+    t0 = df["t_us"].iloc[0]
+    df["t_s"] = (df["t_us"] - t0) / 1e6
+
+    
+    df_rs = data_loader.resample_to_fixed_fs(df, target_fs=target_fs, gap_col="is_gap")
+    if df_rs.empty:
+        return df_rs
+
+    df_rs["acc_mag"] = np.sqrt(df_rs["ax"]**2 + df_rs["ay"]**2 + df_rs["az"]**2)
+    df_rs["gyro_mag"] = np.sqrt(df_rs["gx"]**2 + df_rs["gy"]**2 + df_rs["gz"]**2)
+
+    smoothed_dict = af.apply_lowpass_filter({"realtime": df_rs}, cutoff=cutoff, fs=fs, order=order)
+    df_sm = smoothed_dict["realtime"]
+
+    return df_sm
 
 
 
-def load_model():
+def load_model_bundle():
     try:
-        base_path = os.path.dirname(os.path.abspath(__file__)) 
-        model_path = os.path.join(base_path, "fall_detection_model.joblib")
-        model = joblib.load(model_path)
-        print("Model loaded successfully")
-        return model
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        bundle_path = os.path.join(base_path, "fall_detection_model_bundle.joblib")
+        bundle = joblib.load(bundle_path)
+
+        model = bundle["model"]
+        feature_cols = bundle["feature_cols"]
+
+        print(f"Loaded model bundle: {bundle_path}")
+        print(f"Feature count: {len(feature_cols)}")
+        return model, feature_cols
     except Exception as e:
-        print(f"Model loading error: {e}")
-        return None
+        print(f"Model bundle loading error: {e}")
+        return None, None
+
     
 
+last_pred_time = 0.0
+PRED_EVERY_SECONDS = 0.2  
 
-def predict_label(model=None, data=None):
-    if model is None or not data:
-        return 0, 0.0  # Default label and probability when model or data is not available
+
+
+
+def predict_label_and_prob(model, feature_cols, window_samples: list):
+    if model is None or not window_samples or not feature_cols:
+        return 0.0, 0.0
+
     try:
-        df_window = feats.preprocess_window(data)
-        features_dict = feats.extract_features_from_window(df_window)
+        df_window = preprocess_window_like_training(window_samples, target_fs=50, cutoff=15, fs=50, order=4)
+        features_dict = af.extract_features_from_window(df_window, fs=50)
 
-        X_live = pd.DataFrame([features_dict])
 
-        # model prediction
+        row = [float(features_dict.get(col, 0.0)) for col in feature_cols]
+        X_live = pd.DataFrame([row], columns=feature_cols)
+
         probs = model.predict_proba(X_live)[0]
-        fall_prob = probs[1]  # Assuming class 1 is "Fall"
-        
-        label = 1 if fall_prob >= 0.5 else 0
-        return label, float(fall_prob)
+        fall_prob = float(probs[1])
+        label = 1.0 if fall_prob >= 0.5 else 0.0
+        return label, fall_prob
+ 
+
     except Exception as e:
         print(f"Prediction error: {e}")
-        return 0, 0.0  # Default label and probability on error  
-    
+        return 0.0, 0.0
 
 
 # Websoecket manager to handle multiple connections and broadcast messages
@@ -115,7 +163,8 @@ class WebSocketManager:
         print("WebSocket connected")
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
         print("WebSocket disconnected")
 
     async def broadcast_message(self, message: str):
@@ -128,8 +177,10 @@ class WebSocketManager:
 
 
 websocket_manager = WebSocketManager()
-model = load_model()
+model, FEATURE_COLS = load_model_bundle()
 
+WINDOW_SIZE = 100
+prediction_buffer = []
 
 @app.get("/")
 async def get():
@@ -140,53 +191,76 @@ async def get():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket_manager.connect(websocket)
 
-    prediction_buffer = []
-
     try:
         while True:
-            data = await websocket.receive_text()
+            
+            global last_pred_time
+            now = datetime.now().timestamp()
+            do_pred = (now - last_pred_time) >= PRED_EVERY_SECONDS
 
-            # Broadcast the incoming data to all connected clients
-            json_data = json.loads(data)
+             
 
-            # use raw_data for prediction
-            save_data = json_data.copy()
-            save_data["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            data_processor.add_data(save_data)
+            text = await websocket.receive_text()
+            incoming = json.loads(text)
 
+            
+            if isinstance(incoming, dict) and "samples" in incoming and isinstance(incoming["samples"], list):
+                batch_samples = incoming["samples"]
+            elif isinstance(incoming, dict):
+                batch_samples = [incoming]  
+            else:
+                continue
+
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+           
+            row = {
+                "samples": repr(batch_samples),  
+                "timestamp": ts,
+                "label": 0.0                    
+            }
+            data_processor.add_row(row)
             if len(data_processor.data_buffer) >= 100:
                 data_processor.save_to_csv()
 
-            prediction_buffer.append(json_data)            
-
-            if len(prediction_buffer) > 100:
-                prediction_buffer.pop(0)
             
-            label = 0
-            prob = 0.0
-            
-            
-            if len(prediction_buffer) == 100:
-                label, prob = predict_label(model, prediction_buffer)
-            
-            json_data["label"] = label
-            json_data["probability"] = prob
+            for s in batch_samples:
+                if isinstance(s, dict):
+                    prediction_buffer.append(s)
 
-            ax = json_data.get('ax', 0)
-            ay = json_data.get('ay', 0)
-            az = json_data.get('az', 0)
-            json_data["acc_mag"] = np.sqrt(ax**2 + ay**2 + az**2)
+            if len(prediction_buffer) > WINDOW_SIZE:
+                prediction_buffer[:] = prediction_buffer[-WINDOW_SIZE:]
 
-            if label == 1:
-                print(f"Fall detected with probability {prob:.2f} at {json_data['timestamp']}") 
+            
+            label, prob =0.0, 0.0
+            if do_pred and len(prediction_buffer) == WINDOW_SIZE:
+                label, prob = predict_label_and_prob(model, FEATURE_COLS, prediction_buffer)
+                last_pred_time = now
+            
+            latest = batch_samples[-1] if batch_samples else {}
+            ax = float(latest.get("ax", 0))
+            ay = float(latest.get("ay", 0))
+            az = float(latest.get("az", 0))
+            acc_mag = float(np.sqrt(ax*ax + ay*ay + az*az))
 
-            # broadcast the last data to webpage
-            await websocket_manager.broadcast_message(json.dumps(json_data))
+            out = {
+             "timestamp": ts,
+                "label": float(label),
+                  "probability": float(prob),
+                "acc_mag": acc_mag,
+                     "latest_sample": latest
+}
+
+        
+            print(out)
+
+            await websocket_manager.broadcast_message(json.dumps(out))
 
     except WebSocketDisconnect:
         websocket_manager.disconnect(websocket)
     except Exception as e:
         print(f"WebSocket error: {e}")
+        websocket_manager.disconnect(websocket)
 
 
 if __name__ == "__main__":
