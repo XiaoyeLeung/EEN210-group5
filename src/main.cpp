@@ -6,7 +6,7 @@
 
 const char *ssid = "Edith (2)";
 const char *password = "tionollor";
-const char *webSocketServer = "172.20.10.4";
+const char *webSocketServer = "172.20.10.13";
 const int webSocketPort = 8000;
 
 MPU6050 mpu;
