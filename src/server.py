@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+
 import os
 import json
 from datetime import datetime
@@ -104,22 +105,31 @@ def preprocess_window_like_training(window_samples, target_fs=50, cutoff=15, fs=
 
     return df_sm
 
+CUSTOM_THRESHOLD = None
 
 def load_model_bundle():
     try:
         base_path = os.path.dirname(os.path.abspath(__file__))
-        bundle_path = os.path.join(base_path, "Feb18_model.joblib")
+        bundle_path = os.path.join(base_path, "Old_model.joblib")
         bundle = joblib.load(bundle_path)
 
         model = bundle["model"]
         feature_cols = bundle["feature_cols"]
+        bundle_threshold = bundle.get("threshold", 0.5)
+
+        if CUSTOM_THRESHOLD is not None:
+            threshold = CUSTOM_THRESHOLD
+            print(f"Using custom threshold: {threshold}")
+        else:
+            threshold = bundle_threshold
+            print(f"Using bundle threshold: {threshold}")
 
         print(f"Loaded model bundle: {bundle_path}")
         print(f"Feature count: {len(feature_cols)}")
-        return model, feature_cols
+        return model, feature_cols, threshold
     except Exception as e:
         print(f"Model bundle loading error: {e}")
-        return None, None
+        return None, None, 0.5
 
 
 # Prediction throttling
@@ -250,9 +260,9 @@ def slim_fhir_payload(payload):
         }
     }
 
-def predict_label_and_prob(model, feature_cols, window_samples: list):
-    if model is None or not window_samples or not feature_cols:
-        print(f"Early exit: model={model is None}, samples={len(window_samples)}, cols={len(feature_cols) if feature_cols else 0}")
+def predict_label_and_prob(window_samples: list) -> tuple[float, float]:
+    if model is None or not window_samples or not FEATURE_COLS:
+        print(f"Early exit: model={model is None}, samples={len(window_samples)}, cols={len(FEATURE_COLS) if FEATURE_COLS else 0}")
         return 0.0, 0.0
 
     try:
@@ -265,17 +275,17 @@ def predict_label_and_prob(model, feature_cols, window_samples: list):
         )
         features_dict = af.extract_features_from_window(df_window, fs=50)
 
-        row = [float(features_dict.get(col, 0.0)) for col in feature_cols]
-        X_live = pd.DataFrame([row], columns=feature_cols)
+        row = [float(features_dict.get(col, 0.0)) for col in FEATURE_COLS]
+        X_live = pd.DataFrame([row], columns=FEATURE_COLS)
 
-        probs = model.predict_proba(X_live)[0]
-        fall_prob = float(probs[1])
-        label = 1.0 if fall_prob >= 0.5 else 0.0
+        fall_prob = float(model.predict_proba(X_live)[0][1])
+        label = 1.0 if fall_prob >= THRESHOLD else 0.0
         return label, fall_prob
 
     except Exception as e:
         print(f"Prediction error: {e}")
         return 0.0, 0.0
+
 
 
 # WebSocket manager to handle multiple connections and broadcast messages
@@ -297,12 +307,12 @@ class WebSocketManager:
         for connection in list(self.active_connections):
             try:
                 await connection.send_text(message)
-            except WebSocketDisconnect:
+            except Exception:
                 self.disconnect(connection)
 
 
 websocket_manager = WebSocketManager()
-model, FEATURE_COLS = load_model_bundle()
+model, FEATURE_COLS, THRESHOLD = load_model_bundle()
 
 WINDOW_SIZE = 50
 prediction_buffer = []
@@ -323,10 +333,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            now = datetime.now().timestamp()
+            now = time.time()
             do_pred = (now - last_pred_time) >= PRED_EVERY_SECONDS
 
             text = await websocket.receive_text()
+            print(f"RAW received: {text[:200]}") 
             incoming = json.loads(text)
 
             # Handle reset command from frontend
@@ -366,7 +377,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # Predict fall
             if do_pred and len(prediction_buffer) == WINDOW_SIZE:
-                last_label, last_prob = predict_label_and_prob(model, FEATURE_COLS, prediction_buffer)
+                last_label, last_prob = predict_label_and_prob(prediction_buffer)
                 last_pred_time = now
 
                 prob_history.append(last_prob)
@@ -375,7 +386,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 last_prob = sum(prob_history) / len(prob_history)
     
    
-                last_label = 1.0 if last_prob >= 0.5 else 0.0
+                last_label = 1.0 if last_prob >= THRESHOLD else 0.0
                 print(f"PRED → label={last_label}, prob={last_prob}")  #
 
             # Compute latest acceleration magnitude for plotting

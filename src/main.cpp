@@ -4,9 +4,9 @@
 #include <WebSocketsClient.h>
 #include <Arduino.h>
 
-const char *ssid = "Usagi";
-const char *password = "lululala";
-const char *webSocketServer = "192.168.1.103";
+const char *ssid = "Edith (2)";
+const char *password = "tionollor";
+const char *webSocketServer = "172.20.10.4";
 const int webSocketPort = 8000;
 
 MPU6050 mpu;
@@ -28,6 +28,7 @@ struct Sample {
   int16_t gx, gy, gz;
   uint32_t t_us; // tidsstämpel (valfritt men bra)
 };
+
 
 Sample batch[BATCH_SIZE];
 int batchIndex = 0;
