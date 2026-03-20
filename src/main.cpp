@@ -6,7 +6,7 @@
 
 const char *ssid = "Edith (2)";
 const char *password = "tionollor";
-const char *webSocketServer = "172.20.10.13";
+const char *webSocketServer = "172.20.10.4";
 const int webSocketPort = 8000;
 
 MPU6050 mpu;
@@ -28,6 +28,7 @@ struct Sample {
   int16_t gx, gy, gz;
   uint32_t t_us; // tidsstämpel (valfritt men bra)
 };
+
 
 Sample batch[BATCH_SIZE];
 int batchIndex = 0;

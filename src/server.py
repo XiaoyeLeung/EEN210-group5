@@ -1,15 +1,33 @@
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+
 import os
 import json
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import uvicorn
+import joblib
+import requests
+import random
+import time
+
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi import WebSocketDisconnect
 from starlette.middleware.cors import CORSMiddleware
 
+from Xiaoye_week3_code import analysis_features as af
+from Xiaoye_week3_code import data_loader
+
+
 app = FastAPI()
+
 # Enable CORS for all origins
 app.add_middleware(
     CORSMiddleware,
@@ -19,51 +37,258 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-with open(f"./src/index.html", "r") as f:
-    html = f.read()
- 
+try:
+    with open("./src/index1.html", "r", encoding="utf-8") as f:
+        html = f.read()
+except FileNotFoundError:
+    html = "<h1>index1.html not found</h1>"
 
-class DataProcessor: #saves the data into csv 
+
+class DataProcessor:
     def __init__(self):
-        self.data_buffer = [] #list where you save data
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.file_path = f"./Data/Falling_side_left_short_P3_2_{timestamp}.csv" #CHANGE HERE TO THE TYPE OF MOVEMENT!
+        self.data_buffer = []
+        os.makedirs("./Data", exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.file_path = f"./Data/Falling_side_left_short_P3_2_TESTING{ts}.csv"
         print(self.file_path)
 
-    def add_data(self, data):
-        self.data_buffer.append(data)
+    def add_row(self, row: dict):
+        # Row must have: samples, timestamp, label
+        self.data_buffer.append(row)
 
     def save_to_csv(self):
-        df = pd.DataFrame.from_dict(self.data_buffer)
+        df = pd.DataFrame(self.data_buffer, columns=["samples", "timestamp", "label"])
         self.data_buffer = []
-        # Append the new row to the existing DataFrame
         df.to_csv(
             self.file_path,
             index=False,
             mode="a",
             header=not os.path.exists(self.file_path),
         )
-        #print(f"DataFrame saved to {self.file_path}")
 
 
 data_processor = DataProcessor()
 
 
-def load_model():
-    # you should modify this function to return your model
-    model = None
-    return model
+def preprocess_window_like_training(window_samples, target_fs=50, cutoff=15, fs=50, order=4):
+    """
+    window_samples: list of dicts from ESP32, each has t_us, ax, ay, az, gx, gy, gz
+    returns: DataFrame matching training pipeline after resample + filtering
+    """
+    df = pd.DataFrame(window_samples).copy()
+
+    for c in ["t_us", "ax", "ay", "az", "gx", "gy", "gz"]:
+        if c not in df.columns:
+            df[c] = 0.0
+
+    df["t_us"] = pd.to_numeric(df["t_us"], errors="coerce")
+    df = df.dropna(subset=["t_us"]).sort_values("t_us").reset_index(drop=True)
+    if len(df) < 2:
+        return df
+
+    df["dt_us"] = df["t_us"].diff()
+    dt_med = df["dt_us"].median()
+    df["is_gap"] = df["dt_us"] > (3 * dt_med) if pd.notna(dt_med) and dt_med > 0 else False
+
+    t0 = df["t_us"].iloc[0]
+    df["t_s"] = (df["t_us"] - t0) / 1e6
+
+    df_rs = data_loader.resample_to_fixed_fs(df, target_fs=target_fs, gap_col="is_gap")
+    if df_rs.empty:
+        return df_rs
+
+    df_rs["acc_mag"] = np.sqrt(df_rs["ax"] ** 2 + df_rs["ay"] ** 2 + df_rs["az"] ** 2)
+    df_rs["gyro_mag"] = np.sqrt(df_rs["gx"] ** 2 + df_rs["gy"] ** 2 + df_rs["gz"] ** 2)
+
+    smoothed_dict = af.apply_lowpass_filter({"realtime": df_rs}, cutoff=cutoff, fs=fs, order=order)
+    df_sm = smoothed_dict["realtime"]
+
+    return df_sm
+
+CUSTOM_THRESHOLD = None
+
+def load_model_bundle():
+    try:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        bundle_path = os.path.join(base_path, "Old_model.joblib")
+        bundle = joblib.load(bundle_path)
+
+        model = bundle["model"]
+        feature_cols = bundle["feature_cols"]
+        bundle_threshold = bundle.get("threshold", 0.5)
+
+        if CUSTOM_THRESHOLD is not None:
+            threshold = CUSTOM_THRESHOLD
+            print(f"Using custom threshold: {threshold}")
+        else:
+            threshold = bundle_threshold
+            print(f"Using bundle threshold: {threshold}")
+
+        print(f"Loaded model bundle: {bundle_path}")
+        print(f"Feature count: {len(feature_cols)}")
+        return model, feature_cols, threshold
+    except Exception as e:
+        print(f"Model bundle loading error: {e}")
+        return None, None, 0.5
 
 
-def predict_label(model=None, data=None):
-    # you should modify this to return the label
-    if model is not None:
-        label = model(data)
-        return label
-    return 0
+# Prediction throttling
+last_pred_time = 0.0
+PRED_EVERY_SECONDS = 0.1
+
+prob_history = []
+PROB_SMOOTH_N = 3
+
+# Fall-trigger state for fetching FHIR only once per event
+last_fall_time = 0.0
+FALL_COOLDOWN_SECONDS = 10.0  # Prevent repeated FHIR calls
+fall_active = False           # Detect rising edge of fall event
+last_fhir_payload = None      # Store last fetched FHIR data
+
+# Base URL for public FHIR R4 test server
+FHIR_BASE = "https://r4.smarthealthit.org" # THIS IS THE FHIR BASE THAT I USE 
+FHIR_TIMEOUT = 6  # Request timeout in seconds
 
 
+def fhir_get(path: str, params: dict | None = None):
+    """
+    Perform HTTP GET request to FHIR server.
+    Returns JSON response or None if request fails.
+    """
+    url = f"{FHIR_BASE}{path}"
+    try:
+        response = requests.get(url, params=params, timeout=FHIR_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"FHIR GET error ({url}): {e}")
+        return None
+
+
+def pick_random_patient():
+    """
+    Fetch multiple patients and randomly select one.
+    Returns (patient_id, patient_resource) or (None, None).
+    """
+    bundle = fhir_get("/Patient", params={"_count": 20, "_format": "json"})
+    if not bundle or "entry" not in bundle or not bundle["entry"]:
+        return None, None
+
+    entry = random.choice(bundle["entry"])
+    patient = entry.get("resource", {})
+    patient_id = patient.get("id")
+
+    if not patient_id:
+        return None, None
+
+    return patient_id, patient
+
+
+def fetch_patient_context(patient_id: str):
+    """
+    Fetch additional FHIR resources related to the patient.
+    We include:
+      - Condition (diagnoses)
+      - Observation (vitals/labs)
+      - MedicationRequest (prescribed meds)
+    """
+    conditions = fhir_get("/Condition", params={"patient": patient_id, "_count": 10, "_format": "json"})
+    observations = fhir_get("/Observation", params={"patient": patient_id, "_count": 25, "_format": "json"})
+    meds = fhir_get("/MedicationRequest", params={"patient": patient_id, "_count": 15, "_format": "json"})
+
+    return {
+        "conditions": conditions,
+        "observations": observations,
+        "medicationRequests": meds,
+    }
+
+
+def slim_fhir_payload(payload):
+    if not payload or "error" in payload:
+        return payload
+
+    patient = payload.get("patient", {})
+    context = payload.get("context", {})
+
+    slim_patient = {
+        "id": patient.get("id"),
+        "name": patient.get("name"),
+        "gender": patient.get("gender"),
+        "birthDate": patient.get("birthDate"),
+    }
+
+    def slim_condition_entry(entry):
+        r = entry.get("resource", {})
+        return {
+            "resource": {
+                "code": r.get("code"),
+                "clinicalStatus": r.get("clinicalStatus"),
+            }
+        }
+
+    def slim_observation_entry(entry):
+        r = entry.get("resource", {})
+        return {
+            "resource": {
+                "code": r.get("code"),
+                "valueQuantity": r.get("valueQuantity"),
+                "component": r.get("component"),
+            }
+        }
+
+    def slim_med_entry(entry):
+        r = entry.get("resource", {})
+        return {
+            "resource": {
+                "medicationCodeableConcept": r.get("medicationCodeableConcept"),
+                "medicationReference": r.get("medicationReference"),
+            }
+        }
+
+    def slim_entries(bundle, slim_fn):
+        if not bundle:
+            return None
+        entries = bundle.get("entry", []) or []
+        return {"entry": [slim_fn(e) for e in entries]}
+
+    return {
+        "patient": slim_patient,
+        "context": {
+            "conditions": slim_entries(context.get("conditions"), slim_condition_entry),
+            "observations": slim_entries(context.get("observations"), slim_observation_entry),
+            "medicationRequests": slim_entries(context.get("medicationRequests"), slim_med_entry),
+        }
+    }
+
+def predict_label_and_prob(window_samples: list) -> tuple[float, float]:
+    if model is None or not window_samples or not FEATURE_COLS:
+        print(f"Early exit: model={model is None}, samples={len(window_samples)}, cols={len(FEATURE_COLS) if FEATURE_COLS else 0}")
+        return 0.0, 0.0
+
+    try:
+        df_window = preprocess_window_like_training(
+            window_samples,
+            target_fs=50,
+            cutoff=15,
+            fs=50,
+            order=4,
+        )
+        features_dict = af.extract_features_from_window(df_window, fs=50)
+
+        row = [float(features_dict.get(col, 0.0)) for col in FEATURE_COLS]
+        X_live = pd.DataFrame([row], columns=FEATURE_COLS)
+
+        fall_prob = float(model.predict_proba(X_live)[0][1])
+        label = 1.0 if fall_prob >= THRESHOLD else 0.0
+        return label, fall_prob
+
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        return 0.0, 0.0
+
+
+
+# WebSocket manager to handle multiple connections and broadcast messages
 class WebSocketManager:
     def __init__(self):
         self.active_connections = set()
@@ -74,64 +299,142 @@ class WebSocketManager:
         print("WebSocket connected")
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
         print("WebSocket disconnected")
 
     async def broadcast_message(self, message: str):
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_text(message)
-            except WebSocketDisconnect:
-                # Handle disconnect if needed
+            except Exception:
                 self.disconnect(connection)
 
 
 websocket_manager = WebSocketManager()
-model = load_model()
+model, FEATURE_COLS, THRESHOLD = load_model_bundle()
+
+WINDOW_SIZE = 50
+prediction_buffer = []
 
 
 @app.get("/")
 async def get():
     return HTMLResponse(html)
 
+last_label = 0.0
+last_prob = 0.0
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global last_pred_time, last_fall_time, fall_active, last_fhir_payload, last_label, last_prob
+
     await websocket_manager.connect(websocket)
+
     try:
         while True:
-            data = await websocket.receive_text()
+            now = time.time()
+            do_pred = (now - last_pred_time) >= PRED_EVERY_SECONDS
 
-            # Broadcast the incoming data to all connected clients
-            json_data = json.loads(data)
+            text = await websocket.receive_text()
+            print(f"RAW received: {text[:200]}") 
+            incoming = json.loads(text)
 
-            # use raw_data for prediction
-            raw_data = list(json_data.values())
+            # Handle reset command from frontend
+            if isinstance(incoming, dict) and incoming.get("type") == "reset":
+                last_fhir_payload = None
+                fall_active = False
+                last_fall_time = 0.0  # Allows immediate fetch on next fall
+                await websocket.send_text(json.dumps({"type": "reset_ok"}))
+                continue
 
-            # Add time stamp to the last received data
-            json_data["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if isinstance(incoming, dict) and "samples" in incoming and isinstance(incoming["samples"], list):
+                batch_samples = incoming["samples"]
+            elif isinstance(incoming, dict):
+                batch_samples = [incoming]
+            else:
+                continue
 
-            data_processor.add_data(json_data)
-            # this line save the recent 100 samples to the CSV file. you can change 100 if you want.
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Save incoming samples for logging
+            row = {
+                "samples": repr(batch_samples),
+                "timestamp": ts,
+                "label": 0.0,
+            }
+            data_processor.add_row(row)
             if len(data_processor.data_buffer) >= 100:
-                #print("save to file")
                 data_processor.save_to_csv()
 
-            """  
-            In this line we use the model to predict the labels.
-            Right now it only return 0.
-            You need to modify the predict_label function to return the true label
-            """
-            label = predict_label(model, raw_data)
-            json_data["label"] = label
+            # Update prediction buffer
+            for s in batch_samples:
+                if isinstance(s, dict):
+                    prediction_buffer.append(s)
 
-            # print the last data in the terminal
-            print(json_data)
+            if len(prediction_buffer) > WINDOW_SIZE:
+                prediction_buffer[:] = prediction_buffer[-WINDOW_SIZE:]
 
-            # broadcast the last data to webpage
-            await websocket_manager.broadcast_message(json.dumps(json_data))
+            # Predict fall
+            if do_pred and len(prediction_buffer) == WINDOW_SIZE:
+                last_label, last_prob = predict_label_and_prob(prediction_buffer)
+                last_pred_time = now
+
+                prob_history.append(last_prob)
+                if len(prob_history) > PROB_SMOOTH_N:
+                    prob_history.pop(0)
+                last_prob = sum(prob_history) / len(prob_history)
+    
+   
+                last_label = 1.0 if last_prob >= THRESHOLD else 0.0
+                print(f"PRED → label={last_label}, prob={last_prob}")  #
+
+            # Compute latest acceleration magnitude for plotting
+            latest = batch_samples[-1] if batch_samples else {}
+            ax = float(latest.get("ax", 0))
+            ay = float(latest.get("ay", 0))
+            az = float(latest.get("az", 0))
+            acc_mag = float(np.sqrt(ax * ax + ay * ay + az * az))
+
+            is_fall = (last_label == 1.0)
+
+            # Trigger FHIR fetch only when transitioning from non-fall to fall
+            if is_fall and not fall_active:
+                current_time = time.time()
+
+                # Cooldown prevents spamming FHIR server
+                if (current_time - last_fall_time) >= FALL_COOLDOWN_SECONDS:
+                    last_fall_time = current_time
+
+                    patient_id, patient = pick_random_patient()
+                    if patient_id:
+                        context = fetch_patient_context(patient_id)
+                        last_fhir_payload = {"patient": patient, "context": context}
+                    else:
+                        last_fhir_payload = {"error": "Unable to fetch patient data"}
+
+                fall_active = True
+
+            # Reset trigger when fall ends
+            if not is_fall:
+                fall_active = False
+
+            out = {
+                "timestamp": ts,
+                "label": float(last_label),
+                "probability": float(last_prob),
+                "acc_mag": acc_mag,
+                "latest_sample": latest,
+                "fhir": slim_fhir_payload(last_fhir_payload),
+            }
+
+            print(f"label={out['label']}, prob={out['probability']:.3f}, acc={out['acc_mag']:.3f}")
+            await websocket_manager.broadcast_message(json.dumps(out))
 
     except WebSocketDisconnect:
+        websocket_manager.disconnect(websocket)
+    except Exception as e:
+        print(f"WebSocket error: {e}")
         websocket_manager.disconnect(websocket)
 
 

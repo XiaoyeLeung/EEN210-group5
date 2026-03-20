@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fall Detection Monitor</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      text-align: center;
+      padding: 20px;
+      background-color: #f4f4f9;
+      transition: background-color 0.2s ease;
+    }
+
+    h1 { color: #333; margin-bottom: 18px; }
+
+    .dashboard {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      margin-bottom: 18px;
+      flex-wrap: wrap;
+      align-items: stretch;
+    }
+
+    .card {
+      background: white;
+      padding: 18px;
+      border-radius: 12px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+      min-width: 200px;
+    }
+
+    .label {
+      font-size: 0.9em;
+      color: #666;
+      margin-bottom: 6px;
+      display: block;
+    }
+
+    .value {
+      font-size: 1.8em;
+      font-weight: 800;
+      color: #2c3e50;
+      letter-spacing: -0.02em;
+    }
+
+    .status-normal { color: #27ae60; }
+    .status-danger { color: #c0392b; animation: pulse 0.5s infinite; }
+
+    .fall-detected-bg { background-color: #ffcccc !important; }
+
+    @keyframes pulse {
+      0% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.03); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
+    #chart-container {
+      width: 90%;
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      padding: 15px;
+      border-radius: 12px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+    }
+
+    #alarm-card {
+      display: none;
+      border: 3px solid #c0392b;
+    }
+
+    #ackBtn {
+      margin-top: 12px;
+      padding: 10px 16px;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    #patient-card {
+      min-width: 320px;
+      max-width: 520px;
+      text-align: left;
+    }
+
+    #patient-summary {
+      font-size: 1.05em;
+      font-weight: 800;
+      color: #2c3e50;
+      margin-bottom: 8px;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 6px 10px;
+      margin-top: 6px;
+      font-size: 0.95em;
+      align-items: start;
+    }
+
+    .kv .k { color: #666; }
+    .kv .v { color: #111; word-break: break-word; }
+
+    .muted {
+      color: #666;
+      font-size: 0.92em;
+    }
+
+    .section-title {
+      margin-top: 12px;
+      font-size: 0.9em;
+      color: #666;
+      font-weight: 700;
+    }
+
+    .pill-row {
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 0.85em;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      background: #f7f7fb;
+      white-space: nowrap;
+    }
+
+    .list {
+      margin-top: 6px;
+      font-size: 0.95em;
+      line-height: 1.25em;
+      color: #111;
+    }
+
+    .list ul {
+      margin: 6px 0 0 16px;
+      padding: 0;
+    }
+
+    .list li { margin: 4px 0; }
+
+    details {
+      margin-top: 8px;
+      background: #fafafb;
+      border: 1px solid rgba(0,0,0,0.06);
+      border-radius: 10px;
+      padding: 8px 10px;
+    }
+
+    summary {
+      cursor: pointer;
+      font-weight: 700;
+      color: #2c3e50;
+      outline: none;
+      user-select: none;
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.88em;
+      color: #222;
+    }
+
+    .tiny {
+      font-size: 0.88em;
+      color: #666;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>🚑 Real-Time Fall Detection System</h1>
+
+  <div class="dashboard">
+
+    <div class="card">
+      <span class="label">Patient Status</span>
+      <div id="status-text" class="value status-normal">Monitoring...</div>
+    </div>
+
+    <div class="card" id="alarm-card">
+      <div class="value status-danger" style="font-size:2em;">🚨 FALL ALARM</div>
+      <div id="alarm-time" class="label" style="margin-top:8px;"></div>
+      <button id="ackBtn">Acknowledge / Reset</button>
+    </div>
+
+    <div class="card">
+      <span class="label">Fall Probability</span>
+      <div id="prob-text" class="value">0.0%</div>
+    </div>
+
+    <div class="card" id="patient-card">
+      <span class="label">Patient Info (FHIR)</span>
+      <div id="patient-summary">No patient loaded</div>
+      <div id="patient-details" class="muted">Patient data will appear after a fall event.</div>
+    </div>
+
+  </div>
+
+  <div id="chart-container">
+    <canvas id="sensorChart"></canvas>
+  </div>
+
+  <script>
+    const ctx = document.getElementById('sensorChart').getContext('2d');
+    const MAX_DATA_POINTS = 100;
+
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: Array(MAX_DATA_POINTS).fill(''),
+        datasets: [{
+          label: 'Resultant Acceleration (g)',
+          data: Array(MAX_DATA_POINTS).fill(1.0),
+          borderColor: '#3498db',
+          backgroundColor: 'rgba(52, 152, 219, 0.2)',
+          borderWidth: 2,
+          pointRadius: 0,
+          fill: true,
+          tension: 0.3
+        }]
+      },
+      options: {
+        responsive: true,
+        animation: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          y: { suggestedMin: 0, suggestedMax: 3, title: { display: true, text: 'Acceleration (g)' }  },
+          x: { display: false }
+        }
+      }
+    });
+
+    let alarmLatched = false;
+    let alarmStartTime = null;
+
+    const statusText = document.getElementById("status-text");
+    const probText = document.getElementById("prob-text");
+    const body = document.body;
+
+    const alarmCard = document.getElementById("alarm-card");
+    const alarmTime = document.getElementById("alarm-time");
+    const ackBtn = document.getElementById("ackBtn");
+
+    const patientSummaryEl = document.getElementById("patient-summary");
+    const patientDetailsEl = document.getElementById("patient-details");
+
+    let wsRef = null;
+
+    const uiState = { conditionsOpen: false, medsOpen: false };
+
+    function clearPatientUI() {
+      patientSummaryEl.innerText = "No patient loaded";
+      patientDetailsEl.innerHTML = `<div class="muted">Patient data will appear after a fall event.</div>`;
+      uiState.conditionsOpen = false;
+      uiState.medsOpen = false;
+    }
+
+    ackBtn.onclick = () => {
+      alarmLatched = false;
+      alarmStartTime = null;
+
+      alarmCard.style.display = "none";
+      body.classList.remove("fall-detected-bg");
+
+      statusText.innerText = "Monitoring...";
+      statusText.className = "value status-normal";
+      probText.style.color = "#2c3e50";
+
+      clearPatientUI();
+
+      if (wsRef && wsRef.readyState === WebSocket.OPEN) {
+        wsRef.send(JSON.stringify({ type: "reset" }));
+      }
+    };
+
+    function formatHumanName(patient) {
+      const names = patient?.name;
+      if (!Array.isArray(names) || names.length === 0) return "Unknown name";
+      const n = names[0];
+      const given = Array.isArray(n.given) ? n.given.join(" ") : (n.given ?? "");
+      const family = n.family ?? "";
+      const text = n.text ?? "";
+      const full = (given + " " + family).trim();
+      return full || text || "Unknown name";
+    }
+
+    function calculateAge(birthDateStr) {
+      if (!birthDateStr) return null;
+      const d = new Date(birthDateStr);
+      if (isNaN(d.getTime())) return null;
+      const now = new Date();
+      let age = now.getFullYear() - d.getFullYear();
+      const m = now.getMonth() - d.getMonth();
+      if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+      return age;
+    }
+
+    function shortId(id, keep = 8) {
+      if (!id) return "unknown";
+      if (id.length <= keep * 2) return id;
+      return `${id.slice(0, keep)}…${id.slice(-keep)}`;
+    }
+
+    function normalizeText(s) {
+      return String(s || "").toLowerCase();
+    }
+
+    function roundNumber(x, decimals = 0) {
+      const n = Number(x);
+      if (!Number.isFinite(n)) return null;
+      const f = Math.pow(10, decimals);
+      return Math.round(n * f) / f;
+    }
+
+    function cleanConditionText(s) {
+      return String(s || "")
+        .replace(/\s*\((finding|disorder)\)\s*$/i, "")
+        .replace(/\s*\([^)]*\)\s*$/g, "")
+        .trim();
+    }
+
+    function uniqPreserveOrder(items) {
+      const seen = new Set();
+      const out = [];
+      for (const raw of items) {
+        const key = normalizeText(raw).trim();
+        if (!key) continue;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(raw);
+      }
+      return out;
+    }
+
+    function extractConditions(conditionBundle, limit = 12) {
+      const entries = conditionBundle?.entry;
+      if (!Array.isArray(entries) || entries.length === 0) return [];
+      const tmp = [];
+      for (const e of entries) {
+        const c = e?.resource;
+        if (!c) continue;
+
+        const raw = c?.code?.text ?? c?.code?.coding?.[0]?.display ?? c?.code?.coding?.[0]?.code ?? null;
+        if (!raw) continue;
+
+        const cleaned = cleanConditionText(raw);
+        if (cleaned) tmp.push(cleaned);
+
+        if (tmp.length >= limit * 2) break; // allow room before dedupe
+      }
+      return uniqPreserveOrder(tmp).slice(0, limit);
+    }
+
+    function extractMedications(medBundle, limit = 12) {
+      const entries = medBundle?.entry;
+      if (!Array.isArray(entries) || entries.length === 0) return [];
+      const tmp = [];
+      for (const e of entries) {
+        const m = e?.resource;
+        if (!m) continue;
+
+        const text =
+          m?.medicationCodeableConcept?.text ??
+          m?.medicationCodeableConcept?.coding?.[0]?.display ??
+          m?.medicationReference?.display ??
+          "Medication";
+
+        tmp.push(String(text));
+        if (tmp.length >= limit * 2) break;
+      }
+      return uniqPreserveOrder(tmp).slice(0, limit);
+    }
+
+    function findVitalsFromObservations(observationBundle) {
+      const entries = observationBundle?.entry;
+      const vitals = { systolic: null, diastolic: null, heartRate: null, spo2: null, respRate: null, temperature: null };
+      if (!Array.isArray(entries) || entries.length === 0) return vitals;
+
+      for (const e of entries) {
+        const o = e?.resource;
+        if (!o) continue;
+
+        const name = o?.code?.text ?? o?.code?.coding?.[0]?.display ?? o?.code?.coding?.[0]?.code ?? "";
+        const nameL = normalizeText(name);
+
+        if (nameL.includes("blood pressure") && Array.isArray(o?.component)) {
+          for (const comp of o.component) {
+            const cn = comp?.code?.text ?? comp?.code?.coding?.[0]?.display ?? comp?.code?.coding?.[0]?.code ?? "";
+            const cnL = normalizeText(cn);
+            const v = comp?.valueQuantity?.value;
+            if (v !== undefined) {
+              const vv = roundNumber(v, 0);
+              if (cnL.includes("systolic")) vitals.systolic = vv;
+              if (cnL.includes("diastolic")) vitals.diastolic = vv;
+            }
+          }
+        }
+
+        const v = o?.valueQuantity?.value;
+        if (v !== undefined) {
+          if (!vitals.heartRate && (nameL.includes("heart rate") || nameL.includes("pulse"))) vitals.heartRate = roundNumber(v, 0);
+          if (!vitals.spo2 && (nameL.includes("spo2") || nameL.includes("oxygen saturation") || nameL.includes("o2 sat"))) vitals.spo2 = roundNumber(v, 0);
+          if (!vitals.respRate && (nameL.includes("respiratory rate") || nameL.includes("resp rate"))) vitals.respRate = roundNumber(v, 0);
+          if (!vitals.temperature && (nameL.includes("temperature") || nameL.includes("body temp"))) vitals.temperature = roundNumber(v, 1);
+        }
+
+        const filled = Object.values(vitals).filter(x => x !== null).length;
+        if (filled >= 5) break;
+      }
+      return vitals;
+    }
+
+    function attachDetailsPersistence(detailsEl, key) {
+      if (!detailsEl) return;
+      detailsEl.open = !!uiState[key];
+      detailsEl.addEventListener("toggle", () => {
+        uiState[key] = detailsEl.open;
+      });
+    }
+
+    function renderListCompact(items, title, showFirst = 3, detailsId = "", stateKey = "") {
+      if (!items || items.length === 0) {
+        return `<div class="section-title">${title}</div><div class="muted">None found</div>`;
+      }
+
+      const first = items.slice(0, showFirst);
+      const rest = items.slice(showFirst);
+
+      const firstHtml = `<ul>${first.map(x => `<li>${x}</li>`).join("")}</ul>`;
+      if (rest.length === 0) {
+        return `<div class="section-title">${title}</div><div class="list">${firstHtml}</div>`;
+      }
+
+      const restHtml = `<ul>${rest.map(x => `<li>${x}</li>`).join("")}</ul>`;
+      return `
+        <div class="section-title">${title}</div>
+        <div class="list">${firstHtml}</div>
+        <details id="${detailsId}">
+          <summary>Show more (${rest.length})</summary>
+          <div class="list">${restHtml}</div>
+        </details>
+      `;
+    }
+
+    function renderFHIR(fhirPayload) {
+      if (!fhirPayload || fhirPayload.error) {
+        patientSummaryEl.innerText = fhirPayload?.error ? `FHIR error: ${fhirPayload.error}` : "No patient loaded";
+        patientDetailsEl.innerHTML = "";
+        return;
+      }
+
+      const patient = fhirPayload.patient;
+      const context = fhirPayload.context || {};
+      if (!patient) {
+        patientSummaryEl.innerText = "No patient resource found";
+        patientDetailsEl.innerHTML = "";
+        return;
+      }
+
+      const name = formatHumanName(patient);
+      const gender = patient?.gender ?? "unknown";
+      const birthDate = patient?.birthDate ?? "unknown";
+      const age = calculateAge(patient?.birthDate);
+      const ageText = (age !== null) ? `${age} years` : "unknown";
+
+      const conditions = extractConditions(context.conditions, 12);
+      const medications = extractMedications(context.medicationRequests, 12);
+      const vitals = findVitalsFromObservations(context.observations);
+
+      const pid = patient?.id ?? "unknown";
+      const pidShort = shortId(pid);
+
+      patientSummaryEl.innerText = name;
+
+      const vitalsPills = [];
+      if (vitals.systolic !== null || vitals.diastolic !== null) vitalsPills.push(`<span class="badge">BP: ${vitals.systolic ?? "?"}/${vitals.diastolic ?? "?"} mmHg</span>`);
+      if (vitals.heartRate !== null) vitalsPills.push(`<span class="badge">HR: ${vitals.heartRate} bpm</span>`);
+      if (vitals.spo2 !== null) vitalsPills.push(`<span class="badge">SpO₂: ${vitals.spo2}%</span>`);
+      if (vitals.respRate !== null) vitalsPills.push(`<span class="badge">RR: ${vitals.respRate}/min</span>`);
+      if (vitals.temperature !== null) vitalsPills.push(`<span class="badge">Temp: ${vitals.temperature} °C</span>`);
+
+      patientDetailsEl.innerHTML = `
+        <div class="kv">
+          <div class="k">Gender</div><div class="v">${gender}</div>
+          <div class="k">Birth date</div><div class="v">${birthDate} <span class="tiny">(${ageText})</span></div>
+          <div class="k">Patient ID</div><div class="v mono" title="${pid}">${pidShort}</div>
+        </div>
+
+        <div class="section-title">Vitals</div>
+        <div class="pill-row">${vitalsPills.length ? vitalsPills.join("") : `<span class="muted">No vitals found</span>`}</div>
+
+        ${renderListCompact(conditions, "Conditions", 3, "details-conditions", "conditionsOpen")}
+        ${renderListCompact(medications, "Medications", 3, "details-meds", "medsOpen")}
+      `;
+
+      attachDetailsPersistence(document.getElementById("details-conditions"), "conditionsOpen");
+      attachDetailsPersistence(document.getElementById("details-meds"), "medsOpen");
+    }
+
+    function connectWebSocket() {
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+      wsRef = ws;
+
+      ws.onopen = () => {
+        if (!alarmLatched) {
+          statusText.innerText = "Monitoring...";
+          statusText.className = "value status-normal";
+        }
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "reset_ok") return;
+
+          const probability = ((data.probability ?? 0) * 100).toFixed(1);
+          probText.innerText = probability + "%";
+
+          if (data.fhir) renderFHIR(data.fhir);
+
+          if (!alarmLatched && Number(data.label) === 1) {
+            alarmLatched = true;
+            alarmStartTime = new Date().toLocaleString();
+          }
+
+          if (alarmLatched) {
+            statusText.innerText = "FALL DETECTED!";
+            statusText.className = "value status-danger";
+            body.classList.add("fall-detected-bg");
+            probText.style.color = "#c0392b";
+            alarmCard.style.display = "block";
+            alarmTime.innerText = "Detected at: " + alarmStartTime;
+          } else {
+            statusText.innerText = "Status: Normal";
+            statusText.className = "value status-normal";
+            body.classList.remove("fall-detected-bg");
+            probText.style.color = "#2c3e50";
+            alarmCard.style.display = "none";
+          }
+
+          if (data.acc_mag !== undefined) {
+            chart.data.datasets[0].data.shift();
+            chart.data.datasets[0].data.push(Number(data.acc_mag));
+            chart.update('none');
+          }
+
+        } catch (e) {
+          console.error("Data Parse Error:", e);
+        }
+      };
+
+      ws.onclose = () => {
+        wsRef = null;
+        setTimeout(connectWebSocket, 3000);
+      };
+
+      ws.onerror = (error) => {
+        console.error("WebSocket Error:", error);
+      };
+    }
+
+    connectWebSocket();
+  </script>
+</body>
+
+</html>
